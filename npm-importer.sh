@@ -1,6 +1,50 @@
 #!/bin/bash
 # vim: set ts=3 sw=3 autoindent smartindent:
 
+# DEPENDENCIES:  you will need you yum install 'jq'
+#                you will need 'yarn' installed
+
+#
+#
+#  Approach as of 03/03/2020
+#    1. install the package into a quarantine directory
+#    2. I think this should install dependendencies in the 
+#       'npm_modules' directory of the installed package.
+#        Example:
+#           url=$(npm view --json babylon@6.18.0 repository.url | tr -d '"'
+#           commit=$(npm view --json babylon@6.18.0 gitHead | tr -d '"'
+#           yarn add git+https://github.com/babel/babylon.git#da66d3f65b0d305c0bb042873d57f26f0c0b0538
+#    3.  For every development dependency
+#           cd ~/.global_modules/lib/babylon
+#           # get a list of devDependencies  
+#           dependencies=$(npm view --json $2 dependencies | \
+#                     grep -vE "[{}]" | cut -d":" -f1 | tr -d '"')
+#           for each dependency
+#                npm install -g <dependency>
+#
+#    4.  For every 
+
+#-------------------------------
+# Convenience Scripting
+#  to manual verify approach
+#-------------------------------
+
+# setup destination directory
+destdir="/data/npm-test"
+mkdir -p ${destdir} 
+npm config set prefix ${destdir}
+export PATH=${destdir}/bin:$PATH
+
+# setup npm configuration
+npm config delete proxy
+npm config delete https-proxy
+npm config set registry "http://nexus.vsi-corp.com:8888/repository/npm-proxy/"
+npm config set strict-ssl false
+
+# ------[ end convenience scripting ]-------
+
+
+
 # import our utilities
 DIR="${BASH_SOURCE%/*}"
 if [[ ! -d "$DIR" ]]; then DIR="$PWD"; fi
@@ -95,6 +139,56 @@ function parse_args() {
    yellow "-------------------------------------------------------------------"
 }
 
+#---------------------------------
+#  NOTE:  this function requires
+#         the 'jq' commandline 
+#         tool
+#---------------------------------
+function get_devDependencies() {
+
+	# $1 is expected to be the 'quarantine' directory (one up from the package)
+	# $2 is expected to be the npm package to scan for 
+   #    development dependencies.
+
+	cd $1
+
+	((align+=3))
+	magenta "$(indent $align)Scanning for devDependencies :: $2"
+
+	# grab a copy of the current registry setting : this should be the "secure"
+	# one
+	reg=$(npm config get registry)
+
+	# check if NPM module uses a github repository that break 'npm view'
+	npm view --json $2 repository &> ${output}
+
+	# now get a list of all the devDependencies that works for all repository
+	# types (that I've tried so far).
+	if [ $? -ne 0 ]; then
+		grey "$(indent $((align+7)))$2 probably has a github repository url.  Trying alternate approach."
+		npm config delete registry &> ${output}
+		npm view --json $2 devDependencies > $2-devDeps.json
+	else
+		npm view --json $2 devDependencies > $2-devDeps.json
+	fi
+
+	# reset to 'npm-mpf' registry
+	npm config set registry $reg
+
+	typeset -A devDeps
+	while IFS== read -r key value;
+	do 
+		# this doesn't work with npm packages that have 
+      # '-' and numbers.
+		myarray["$key"]="$(echo $value | tr -d '^')";
+
+		# so, just install them here.
+		blue "$(indent $align)   * installing $key@@value"
+		npm install -g $key@$value
+
+	done < <(jq -r 'to_entries | .[] | .key + "=" + .value ' $2-devDeps.json)
+
+}
 
 #---------------------------------
 
@@ -159,7 +253,10 @@ function download_package() {
 	do
 		cyan "$(indent $((align+5)))modules[${dep}] = ${modules[${dep}]}"
 		if [[ "${modules[${dep}]}" == "not verified" ]]; then
-			download_package $1 $dep
+			pushd $PWD > ${output}
+			cd $2
+			npm install $dep
+			#download_package $1 $dep
 		fi
 	done
 	((align-=3))
@@ -181,6 +278,8 @@ function publish_module() {
 		red "more than one download package found for $2.  skipping."
 		return
 	else
+
+      # need to ensure that all devDependencies are installed to publish
 		tball=$(find $2 -name "$2*.tgz")
 		yellow "publishing ${tball}"
 
