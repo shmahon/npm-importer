@@ -24,27 +24,6 @@
 #
 #    4.  For every 
 
-#-------------------------------
-# Convenience Scripting
-#  to manual verify approach
-#-------------------------------
-
-# setup destination directory
-destdir="/data/npm-test"
-mkdir -p ${destdir} 
-npm config set prefix ${destdir}
-export PATH=${destdir}/bin:$PATH
-
-# setup npm configuration
-npm config delete proxy
-npm config delete https-proxy
-npm config set registry "http://nexus.vsi-corp.com:8888/repository/npm-proxy/"
-npm config set strict-ssl false
-
-# ------[ end convenience scripting ]-------
-
-
-
 # import our utilities
 DIR="${BASH_SOURCE%/*}"
 if [[ ! -d "$DIR" ]]; then DIR="$PWD"; fi
@@ -69,6 +48,9 @@ function usage() {
    grey  "  requiring any elevated permissions, scan it for viruses,  "
    grey  "  and then upload it to our local npm-mpf registry (which   "
    grey  "  is *not* proxied and therefore a sanitary repository.     "
+   grey  "                                                            "
+   grey  "  You can specify a package simply like 'babel-core' or you "
+   grey  "  can add a version such as 'babel-core@6.26.0'.            "
    grey  "                                                            "
    grey  "  Note:  this script will manipulate your .npmrc config-    "
    grey  "  ration during the importation process and then put it     "
@@ -133,133 +115,300 @@ function parse_args() {
       red "no npm package specified for import!"
 		usage
    else
-      NPMPACKAGE=$1
-      green  "Importing $NPMPACKAGE package..."
+      NPMPACKAGE=${1%%@[\^1-9]*}
+		NPMVERSION=${1##*@}
+		if [[ $NPMVERSION == $NPMPACKAGE ]]; then
+			NPMVERSION=""
+			green  "Importing $NPMPACKAGE package..."
+		else
+			green  "Importing $NPMPACKAGE version $NPMVERSION package..."
+		fi
    fi
    yellow "-------------------------------------------------------------------"
 }
 
-#---------------------------------
-#  NOTE:  this function requires
-#         the 'jq' commandline 
-#         tool
-#---------------------------------
+
+#-----------------------------------
+#
+#
+#-----------------------------------
+function check_dep() {
+
+	# $1 : the package name (with version if you require it)
+   # $2 : type of dependency.  must be 'global' or 'local' 
+	#      defaults to 'local'
+	
+	local pkgver=$1
+	local scope=${2:-'local'}
+	local res=0
+
+	((align+=3))
+	case "$scope" in
+
+		local )
+			#grey "$(indent $align)check_dep( 'local' ) :: $1";
+			npm list $pkgver --depth=0 &> ${output};
+			res=$?; ;;
+		global )
+			#grey "$(indent $align)check_dep( 'global' ) :: $1";
+			npm list $pkgver -g --depth=0 &> ${output};
+			res=$?; ;;
+		* )
+			# just default to 'local' scope
+			magenta "$(indent $align)check_dep( $scope ) : invalid 'scope' provided; defaulting to 'local'.";
+			npm list $pkgver --depth=0 &> ${output};
+			res=$?; ;;
+	esac
+	((align-=3))
+
+	# just return the result
+	return $res
+}
+
+#-----------------------------------
+#
+#
+#-----------------------------------
+function install_devDependencies() {
+
+	local jsonfile=$1
+	local key
+	local value
+
+	# install all dependencies; package local installation
+	while IFS== read -r key value;
+	do
+
+		# check for empty dev deps
+		if [ -z $key ]; then
+			echo "key => x${key}x"
+			break
+		fi
+
+		# version fixup
+		value=${value//[\^\~]/}
+
+		# so, just install them here.
+		blue -n "$(indent $align)   - "; blue -n "installing $key@$value"
+
+		# only add this dependency if not already in our list
+		if [[ ! -z "${devdeps[${key},${value}]:-}" ]]; then
+			red " x"
+		else
+			green " *"
+			devdeps[${key},${value}]=modpaths[${NPMPACKAGE},${NPMVERSION}]/$key
+		fi
+
+		# already installed?
+		check_dep $key@$value 'global'
+		if [ $? -ne 0 ]; then
+			npm install -g $key@$value &> ${output}
+		else
+			grey "$(indent $align)    already installed."
+		fi
+
+	done < <(jq -r 'to_entries | .[] | .key + "=" + .value ' $jsonfile);
+}
+
+
+#------------------------------------------------------------------
+#  NOTE:  this function requires the 'jq' commandline tool
+#
+#  This function should be run at the $quarantine/node_module
+#  level of the directory tree.
+#------------------------------------------------------------------
 function get_devDependencies() {
 
 	# $1 is expected to be the 'quarantine' directory (one up from the package)
 	# $2 is expected to be the npm package to scan for 
-   #    development dependencies.
+   #    development dependencies, including the version.
+	local nodedir=$1
+	local pkgver=$2
 
-	cd $1
+	# record where we started
+	pushd $PWD &> ${output}
 
-	((align+=3))
-	magenta "$(indent $align)Scanning for devDependencies :: $2"
+	# go to 'node_modules'
+	cd $nodedir
 
-	# grab a copy of the current registry setting : this should be the "secure"
-	# one
-	reg=$(npm config get registry)
+	(( align+=3 ))
+	magenta "$(indent $align)$pkgver :: dev dependencies"
 
-	# check if NPM module uses a github repository that break 'npm view'
-	npm view --json $2 repository &> ${output}
-
-	# now get a list of all the devDependencies that works for all repository
-	# types (that I've tried so far).
+	# now get a list of all the devDependencies from module's package.json 
+	npm view --json $pkgver devDependencies > ./${pkgver%%@[\^1-9]*}/devDeps.json 2> ${output};
 	if [ $? -ne 0 ]; then
-		grey "$(indent $((align+7)))$2 probably has a github repository url.  Trying alternate approach."
-		npm config delete registry &> ${output}
-		npm view --json $2 devDependencies > $2-devDeps.json
-	else
-		npm view --json $2 devDependencies > $2-devDeps.json
+		red "get_devDependencies :: error getting dev dependencies for $pkgver" 
+		exit 1
 	fi
 
-	# reset to 'npm-mpf' registry
-	npm config set registry $reg
+	# check if no dev dependencies
+	if [ ! -s ./${pkgver%%@[\^1-9]*}/devDeps.json ]; then
+		grey "$(indent $align)no dev dependencies"
+	else
+		install_devDependencies ${pkgver%%@[\^1-9]*}/devDeps.json;
+	fi
+	(( align-=3 ))
 
-	typeset -A devDeps
-	while IFS== read -r key value;
-	do 
-		# this doesn't work with npm packages that have 
-      # '-' and numbers.
-		myarray["$key"]="$(echo $value | tr -d '^')";
-
-		# so, just install them here.
-		blue "$(indent $align)   * installing $key@@value"
-		npm install -g $key@$value
-
-	done < <(jq -r 'to_entries | .[] | .key + "=" + .value ' $2-devDeps.json)
+	# return to where we started
+	popd &> ${output};
 
 }
 
-#---------------------------------
 
+#---------------------------------
+#  
+#
+#---------------------------------
+function install_dependencies()
+{
+
+	# $1 : the fully qualified path/file name with json dependencies
+	local jsonfile=$1
+
+	local key
+	local value
+
+	# install local to the package
+	cd `dirname ${jsonfile}`
+	grey "$(indent $align)pkg path = ${PWD}"
+
+	# install dependencies; package local installation
+	while IFS== read -r key value;
+	do 
+
+		# check for empty deps
+		if [ -z $key ]; then
+			echo "key => x${key}x"
+			break
+		fi
+
+		# version fixup
+		value=${value//[\^\~]/}
+
+		# so, just install them here.
+		blue -n "$(indent $align)+ "; white -n "installing $key@$value"
+
+		# only add this dependency if not already in our list
+		if [[ ! -z "${modules[${key},${value}]:-}" ]]; then
+			red " x"
+		else
+			green " *"
+			modules[${key},${value}]="verified"
+			modpaths[${key},${value}]=$PWD/node_modules
+		fi
+
+		# alread installed ? 
+		check_dep $key@$value 'local'
+		if [ $? -ne 0 ]; then 
+			# this probably should be before the printing above, but ....
+			npm install $key@$value &> ${output}
+
+			# install all of the devDependencies at the 'global' scope
+			get_devDependencies $PWD/node_modules $key@$value
+			if [ $? -ne 0 ]; then
+				red "install_dependencies :: get_devDependencies :: failed for $key"; 
+				exit
+			fi
+
+			# recursively add this dependencies, dependencies.
+			get_dependencies $PWD/node_modules $key $value
+		else
+			grey "$(indent $align)    already installed."
+		fi
+
+	done < <(jq -r 'to_entries | .[] | .key + "=" + .value ' $jsonfile )
+
+}
+
+
+#---------------------------------
+#  
+#
+#---------------------------------
+function get_dependencies() {
+
+   # $1 : the full package path; one up from the module
+	# $2 : the package name
+	# $3 : the package *version* (can be empty)
+	
+	local nodedir=$1
+	local package=$2
+	local version=$3
+
+	# record where we started
+	((align+=3))
+	pushd $PWD &> ${output}
+
+	# go to 'node_modules' directory
+	cd $nodedir
+
+	magenta "$(indent $align)$package${version:+@$version} :: dependencies"
+
+	# now get a list of all the dependencies from module's package.json 
+	npm view --json $package${version:+@$version} dependencies > $package/deps.json 2> ${output}
+	if [ $? -ne 0 ]; then
+		red "get_dependencies :: error getting dependencies for $package${version:+@$version}" ;
+		exit;
+	fi
+
+	((align+=3))
+	# check if no dependencies
+	if [ ! -s $package/deps.json ]; then
+		white "$(indent $align)no dependencies"
+	else
+		# do the real work
+		install_dependencies ${PWD}/$package/deps.json
+	fi
+	((align-=3))
+	((align-=3)) # for some reason, this causes $? = 1
+
+	# go back to where we started
+	popd &> ${output}
+}
+
+
+
+#---------------------------------
 #  NOTE:  also need to get 
 #         "peerDependencies"
 #---------------------------------
-function download_package() {
+function install_package() {
 
-	# $1 is expected to be the 'quarantine' directory (one up from package)
-	# $2 is expected to be the package name (directory name of package)
+	# $1 : the 'quarantine' directory (one up from package)
+	# $2 : the package name (directory name of package)
+	# $3 : the package *version* (can be empty)
 
-	cd $1
+	local nodedir=$1
+	local package=$2
+	local version=$3
 
-	grey "$(indent $align)Downloading package :: $2"
-	#npmDownload -p "${NPMPACKAGE}" --dependencies -o ~/npm-quarantine
-	npmDownload -p "$2" -o ~/npm-quarantine &> ${output}
+	# record where we started
+	pushd $PWD &> ${output}
 
-	# grab a copy of the current registry setting : this should be the "secure"
-	# one
-	reg=$(npm config get registry)
+	# go to 'quarantine' directory
+	cd $nodedir
 
-	# check if NPM module uses a github repository that break 'npm view'
-	npm view --json $2 repository &> ${output}
+	# install the module without caching it in npm-proxy
+	grey "$(indent $align)Installing package locally :: $package${version:+@$version}"
+	npm install -g "$package${version:+@$version}" &> ${output} 
 
-	# now get a list of all the dependencies that works for all repository
-	# types (that I've tried so far).
+	# mark this module as installed
+	modules[${package},$version]="verified"
+	modpaths[${package},$version]=$PWD/lib/node_modules
+
+
+	# install all of the devDependencies at the 'global' scope
+	get_devDependencies $1/lib/node_modules $package@$version 
 	if [ $? -ne 0 ]; then
-		grey "$(indent $((align+7)))$2 probably has a github repository url.  Trying alternate approach."
-		npm config delete registry &> ${output}
-		dependencies=$(npm view --json $2 dependencies | grep -vE "[{}]" | cut -d":" -f1 | tr -d '"')
-		modules[${2}]="alternate"
-	else
-		dependencies=$(npm view --json $2 dependencies | grep -vE "[{}]" | cut -d":" -f1 | tr -d '"')
-		modules[${2}]="verified"
+		red "install_package :: get_devDependencies :: failed for $package"
+		exit 1
 	fi
 
-	# reset to 'npm-mpf' registry
-	npm config set registry $reg
+	# install all dependencies in package local 'node_modules'
+	get_dependencies $nodedir/lib/node_modules $package
 
-
-	# only add the new dependency if its not already in our list of modules
-	for dep in $dependencies
-	do
-		if [[ ! -z "${modules[${dep}]:-}" ]]; then
-			cyan "$(indent $((align+3)))$dep is already in our list of modules"
-		else
-			#cyan "$(indent $((align+3)))adding $dep to list of modules"
-			magenta "$(indent $((align+3)))$dep"
-			modules[${dep}]="not verified"
-		fi
-
-		# mark as 'installed' if already in registry
-		npm view --json $dep repository &> ${output}
-		if [ $? -eq 0 ]; then
-			modules[${dep}]="published"
-		fi
-	done
-
-	((align+=3))
-	# recursively download all dependencies
-	for dep in $dependencies
-	do
-		cyan "$(indent $((align+5)))modules[${dep}] = ${modules[${dep}]}"
-		if [[ "${modules[${dep}]}" == "not verified" ]]; then
-			pushd $PWD > ${output}
-			cd $2
-			npm install $dep
-			#download_package $1 $dep
-		fi
-	done
-	((align-=3))
+	# return to original location
+	popd &> ${output}
 }
 
 
@@ -268,27 +417,103 @@ function download_package() {
 #---------------------------------
 function publish_module() {
 
+	# $1 : the directory (one up from package)
+	# $2 : the package name (directory name of package)
+	# $3 : the package *version* (can be empty)
+
+	# record where we started
 	pushd $PWD &> ${output}
-	cd $1
-	tball_cnt=$(find $2 -name "$2*.tgz" | wc -l)
-	if [[ $tball_cnt -lt 1 ]]; then
-		red "no download packages found for $2.  skipping."
-		return
-	elif [ $tball_cnt -gt 1 ]; then
-		red "more than one download package found for $2.  skipping."
-		return
-	else
 
-      # need to ensure that all devDependencies are installed to publish
-		tball=$(find $2 -name "$2*.tgz")
-		yellow "publishing ${tball}"
 
-		npm publish ${tball} --registry=$3 --access public
-
-		success	
+	if [ 1 -eq 0 ]; then
+		if [[ "${2}" == "${NPMPACKAGE}" ]]; then
+			cd $1/lib/node_modules/${NPMPACKAGE}
+		else
+			# assume we are installing a dependency
+			cd $1/lib/node_modules/${NPMPACKAGE}/node_modules/$2
+		fi
 	fi
 
+	cd $1/$2
+
+	yellow -n "publishing ${2}"
+	npm publish --access public &> ${output}
+	if [ $? -eq 0 ]; then
+		success	
+		modules[${2},${3}]="published"
+	else
+		failure
+		modules[${2},${3}]="failed"
+	fi
+
+	# return to original location
 	popd &> ${output}
+}
+
+
+#---------------------------------
+
+#---------------------------------
+function does_exist() {
+
+	# just create a module report
+	magenta "check publication of $1@$2 on $3:" 
+	white   "--------------------------------------------"
+	npm view "$1@$2" --registry=$3
+	cyan -n "$(indent $((align+3))) $1@$2 : "
+	if [ $? -eq 0 ]; then
+		green "published."
+	else
+		red "unpublished"
+	fi
+	white   "--------------------------------------------"
+}
+
+
+#---------------------------------
+
+#---------------------------------
+function config_npmrc() {
+	# $1 adjective indicating 'safe' or 'proxy' or 'open'
+	if [ $# -eq 0 ]; then
+		red "config_npmrc :: called with no arguments"
+		white "$(indent 5)must provide one of the following:"
+		white "$(indent 7)'safe'  - set .npmrc to point to npm-mpf repository"
+		white "$(indent 7)'proxy' - set .npmrc to point to npm-proxy repository"
+		white "$(indent 7)'open'  - set .npmrc to point to https://registry.npmjs.org/"
+		exit
+	fi
+
+	case "$1" in
+
+		# 'safe'  : point to http://nexus.vsi-corp.com:8888/repository/npm-mpf/
+		#           normal state for 'secure' development
+		safe )
+		   white -n "$(indent 5)npmrc config :: "; green "safe";
+			npm config set proxy "http://nexus.vsi-corp.com:8888";
+			npm config set https-proxy "http://nexus.vsi-corp.com:8888";
+			npm config set registry "http://nexus.vsi-corp.com:8888/repository/npm-mpf/";
+			npm config set strict-ssl false; ;;
+		# 'proxy' : point to http://nexus.vsi-corp.com:8888/repository/npm-proxy/
+		#           used for caching local copies for evaluation
+		proxy )
+		   white -n "$(indent 5)npmrc config :: "; yellow "proxy";
+			npm config set proxy "http://nexus.vsi-corp.com:8888";
+			npm config set https-proxy "http://nexus.vsi-corp.com:8888";
+			npm config set registry "http://nexus.vsi-corp.com:8888/repository/npm-proxy/";
+			npm config set strict-ssl false; ;;
+		# 'open'  : point to https://registry.npmjs.org/
+		#           used for getting direct access to internet NPM registry for
+		#           virus scanning
+		open )
+		   white -n "$(indent 5)npmrc config :: "; red "open";
+			npm config delete proxy;
+			npm config delete https-proxy;
+			npm config delete registry;
+			npm config delete strict-ssl; ;;
+
+		* ) red "config_npmrc :: invalid paramater '$1' provided.  Aborting."; exit ;;
+	esac
 }
 
 
@@ -299,106 +524,97 @@ function report() {
 
 	# just create a module report
 	magenta "Module and Dependency Report:"
-	white   "--------------------------------------------"
+	white   "------------------------------------------------------"
 	for key in ${!modules[@]}
 	do
-		blue "$key $(indent 20)-> ${modules[${key}]}"
+		blue "$key $(indent 40)-> ${modules[${key}]}"
 	done
-	white   "--------------------------------------------"
+	white   "------------------------------------------------------"
 }
 
 # ======================== [ script begins here ] ===========================
 
 NPMPACKAGE=""
+NPMVERSION=""
 output=/dev/null
 align=0
+quarantine="/data/npm-quarantine"
 
-declare -A modules  # an array with modules[<package name>] = <status>
-declare -A devdeps  # an array with devdeps[<package name>] = <status>
+declare -A modules   # an array with modules[<package name>,<package version>] = <status>
+declare -A devdeps   # an array with devdeps[<package name>,<package version>] = <path>
+declare -A modpaths  # an array with modpaths[<package name>,<package version] = <path>
 
-# need to make sure 'grep' isn't aliased
+# need to make sure 'grep' and 'ls' aren't aliased
 unalias grep &> ${output}
+unalias ls &> ${output}
 
 parse_args $@
 
-LOGFILE="${NPMPACKAGE}_clam.log"
 
-#--------------------------------------
-# ensure proper NPM configuration
-#--------------------------------------
-npm config set proxy "http://nexus.vsi-corp.com:8888"
-npm config set https-proxy "http://nexus.vsi-corp.com:8888"
-npm config set registry "http://nexus.vsi-corp.com:8888/repository/npm-mpf/"
-npm config set strict-ssl false
- 
+oldpath=$PATH
+trap 'res=$?; config_npmrc 'safe'; export PATH=$oldpath; exit $res' INT EXIT
+
 #--------------------------------------
 # ensure local installation
 #    - no escalated privileges
 #--------------------------------------
 cd ${HOME}
-mkdir -p ~/.global-modules
-npm config set prefix "~/.global-modules"
-export PATH=~/.global-modules/bin:$PATH
-
-# make sure that our npm-package-downloader tool is installed
-which npmDownload > ${output} 2>&1
-if [ $? -ne 0 ]; then
-	green "installing npm-package-downloader from $(npm config get registry)."
-	npm install -g npm-package-downloader >& ${output}
-	grey  "\tdone."
-fi
-
-
-#
-# quarantine directory
-#
-if [ -d ~/npm-quarantine ]; then
-	cyan "This script will erase and recreate ~/npm-quarantine to use as a"
-	cyan "  sanitary sandbox."
-
+if [ -d $quarantine ]; then
+	echo "$quarantine already exists"
 	while true; do
-		cmode $fg_magenta
-		read -p "Do you confirm that it is OK? [Y/N] :: " yn
+		cmode $fg_cyan
+		read -p "    Do you wish to erase it before starting? [Y/N] :: " yn
 
 		# verify response
 		case $yn in
-			[Y]* ) break;;
-			[N]* ) red "   exiting." ; exit 1 ;;
-            * ) grey "  Please answer Yes or No";;
+			[Y]* ) rm -rf $quarantine; break;;
+			[N]* ) break ;;
+            * ) grey "      Please answer Yes or No";;
 		esac
 	done
 	cmode $reset
-
-	rm -rf ~/npm-quarantine
 fi
 
-# recreate the clean sandbox
-mkdir -p ~/npm-quarantine
- 
-# temporarily open up our registry to hit npm
-npm config delete proxy
-npm config delete https-proxy
- 
-# download the package with dependencies.
-download_package ~/npm-quarantine ${NPMPACKAGE} 
-success
+#--------------------------------------
+# ensure proper NPM configuration
+#--------------------------------------
+config_npmrc 'safe' 
+mkdir -p $quarantine                # setup sandbox to work in
+npm config set prefix $quarantine
+export PATH=$quarantine/bin:$PATH
 
+#--------------------------------------
+#  Begin the installation process
+#--------------------------------------
+
+#
+# Caution : npm set to access the internet registry
+# 
+config_npmrc 'open'
+
+# download the package with dependencies.
+install_package ${quarantine} ${NPMPACKAGE} ${NPMVERSION} 
+
+# advertising
+white -n "installation of ${NPMPACKAGE}@${NPMVERSION}"; success;
 report
 
-# set our registry correctly again
-npm config set proxy http://nexus.vsi-corp.com:8888/
-npm config set https-proxy http://nexus.vsi-corp.com:8888/
+#--------------------------------------
+# Virus Scanning
+#--------------------------------------
  
 # scan the downloaded software
-cd ~/npm-quarantine
+LOGFILE="./${NPMPACKAGE/\//_}_clam.log"
+
+cd ${quarantine} 
 green -n "Scanning for viruses ::"
-clamscan -ri ~/npm-quarantine &> "${LOGFILE}"
+clamscan -ri ${quarantine} &> "./${LOGFILE}"
 
 # get the value of "Infected lines" 
-MALWARE=$(tail "${LOGFILE}" | grep Infected |cut -d" " -f3) 
+MALWARE=$(tail "./${LOGFILE}" | grep Infected |cut -d" " -f3) 
 
 # if the value is not equal to zero, abort!!
-if [ "$MALWARE" -ne "0" ];then 
+if [[ "$MALWARE" -ne "0" ]];then 
 	failure
 	red "Malware has been detected while scanning ${NPMPACKAGE}!"
 	red "$(indent 3)Aborting the import."
@@ -413,33 +629,31 @@ fi
 # add credentials to MPF hosted npm registry
 green "Publishing $NPMPACKAGE and its dependencies to 'npm-mpf' nexus repo"
 
+config_npmrc 'safe'
+
 # this requires your Crowd credentials
 magenta "Please verify your credentials ::"
 npm adduser --registry=http://nexus.vsi-corp.com:8888/repository/npm-mpf/  
- 
+
+export PATH=$quarantine/bin:$PATH
+
 for key in ${!modules[@]}
 do
-	# skip modules that have already been published
-   if [[ "${modules[${key}]}" == "published" ]]; then
-		continue
-   fi
+	# get module and version from key
+	module=${key%%,*}
+	version=${key##*,}
 
-	# this handles NPM packages with a github repository
-	reg=$(npm config get registry)
-	if [[ "${modules[${key}]}" == "alternate" ]]; then
-		npm config delete registry &> ${output} 
+	# skip modules that have already been published
+	npm view ${module}@${version} &> /dev/null
+	if [ $? -eq 0 ]; then
+		grey "${module}@${version} :: already published"
+		modules[${key}]="published"
 	fi
 
-#
-#
-# This script isn't working because I'm not downloading the
-# development dependencies and installing them first.  As such,
-# when I go to publish the packages, they can't be built and pushed.
-#
-#
-	publish_module ~/npm-quarantine ${key} $reg
+	publish_module ${modpaths[${module},${version}]} ${module} ${version}
 	modules[${key}]="published"
-
-	# reset the registry to normal 'npm-mpf'
-	npm config set registry $reg
 done
+
+# summary report
+report
+#yellow "debug abort" ; exit;
