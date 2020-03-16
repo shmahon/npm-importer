@@ -536,14 +536,14 @@ function publish_module() {
 	if [ $? -eq 0 ]; then
 		grey "$(indent $align)${1}${2:+@$2} :: already published" &> ${output}
 		modules[${key}]=$(echo "${modules[${1}${2:+,$2}]},published")
-		success 60
+		success 70
 	else
 		npm publish --access public --ignore-scripts &> ${output}
 		if [ $? -eq 0 ]; then
-			success 60
+			success 70
 			modules[${1}${2:+,$2}]=$(echo "${modules[${1}${2:+,$2}]},published")
 		else
-			failure 60
+			failure 70
 			modules[${1}${2:+,$2}]=$(echo "${modules[${1}${2:+,$2}]},not published")
 		fi
 	fi
@@ -739,8 +739,7 @@ do
 	(( align+=2 ))
 
 	# early skip for modules that are already imported
-	npm view ${module}${version:+@$version} &> /dev/null
-	if [ $? -eq 0 ]; then
+	if [[ $(npm view --json ${module}${version:+@$version} version) != "" ]]; then #&> ${output}
 		grey " $(indent $align)already published :: ${module}."
 		modules[${key}]=$(echo "${modules[${module}${version:+,$version}]},published")
 		(( align-=2 ))
@@ -752,9 +751,10 @@ do
 	moduledir="${modpaths[${module}${version:+,$version}]}"
 	
 	cd $moduledir
+	((align+=2))
    
 	# scan the downloaded software
-	blue -n "$(indent $align) virus scanning :: ${module}."
+	blue -n "$(indent $align)virus scanning :: ${module}."
 	LOGFILE="$module-$(date +%T-%m%d%Y).clam"
 	clamscan -ri "$moduledir" > "./$LOGFILE"
 
