@@ -528,24 +528,18 @@ function publish_module() {
 	# $1 : the package name (directory name of package)
 	# $2 : the package *version* (can be empty)
 
-	# debug
+	# get the 'actual' installed version, can be different than expected
 	yellow -n "$(indent $align)publishing module :: ${1} , version :: ${2}"
+	white -n " [" ; green -n "$actualver"; white -n "]"
 
 	# skip modules that have already been published
-	npm view ${1}${2:+@$2} &> /dev/null
+	npm publish --access public --ignore-scripts &> ${output}
 	if [ $? -eq 0 ]; then
-		grey "$(indent $align)${1}${2:+@$2} :: already published" &> ${output}
-		modules[${key}]=$(echo "${modules[${1}${2:+,$2}]},published")
-		success 70
+		success 80
+		modules[${1}${2:+,$2}]=$(echo "${modules[${1}${2:+,$2}]},published")
 	else
-		npm publish --access public --ignore-scripts &> ${output}
-		if [ $? -eq 0 ]; then
-			success 70
-			modules[${1}${2:+,$2}]=$(echo "${modules[${1}${2:+,$2}]},published")
-		else
-			failure 70
-			modules[${1}${2:+,$2}]=$(echo "${modules[${1}${2:+,$2}]},not published")
-		fi
+		failure 80
+		modules[${1}${2:+,$2}]=$(echo "${modules[${1}${2:+,$2}]},not published")
 	fi
 }
 
@@ -733,28 +727,39 @@ do
 		version=""
 	fi
 
-	# advertise
-	yellow -n "\n$(indent $align) - " 
-	white "${module}${version:+@$version}"
-	(( align+=2 ))
-
-	# early skip for modules that are already imported
-	if [[ $(npm view --json ${module}${version:+@$version} version) != "" ]]; then #&> ${output}
-		grey " $(indent $align)already published :: ${module}."
-		modules[${key}]=$(echo "${modules[${module}${version:+,$version}]},published")
-		(( align-=2 ))
-		continue
-	fi
-
-	# if we're here than we need to scan and import
+	# work out of the locally installed module dir
 	pushd $PWD &> ${output}
 	moduledir="${modpaths[${module}${version:+,$version}]}"
 	
 	cd $moduledir
+
+	# advertise
+	yellow -n "\n$(indent $align) - " 
+	white -n "${module}${version:+@$version}"
+
+	# get the 'actual' installed version, can be different than expected
+	actualver=$(cat package.json | jq -r ".version")
+	if [[ $actualver != $version ]]; then 
+		white -n " [" ; green -n "$actualver"; white -n "]"; 
+	fi
+	white "" # just finish the line
+
+	# debug formatting
+	(( align+=2 ))
+
+	# early skip for modules that are already imported
+	if [[ $(npm view --json ${module}${actualver:+@$actualver} version) != "" ]]; then #&> ${output}
+		grey " $(indent $align)already published :: ${module}@${actualver}."
+		modules[${key}]=$(echo "${modules[${module}${version:+,$version}]},published")
+		(( align-=2 ))
+		continue
+	fi
+	
+	# debug formatting
 	((align+=2))
    
 	# scan the downloaded software
-	blue -n "$(indent $align)virus scanning :: ${module}."
+	blue -n "$(indent $align)virus scanning :: ${module}@${actualver}."
 	LOGFILE="$module-$(date +%T-%m%d%Y).clam"
 	clamscan -ri "$moduledir" > "./$LOGFILE"
 
@@ -763,7 +768,7 @@ do
 
 	# if the value is not equal to zero, abort!!
 	if [[ "$MALWARE" -ne "0" ]];then 
-		failure
+		failure 80
 		red "$(indent $align)Malware has been detected while scanning ${module}!"
 		red "$(indent $((align+3)))Aborting the import."
 		yellow "$(indent $((align+5)))$module will be kept in $moduledir"
@@ -771,7 +776,7 @@ do
 
 		modules[${key}]="virus detected"
 	else
-		success
+		success 80
 		modules[${key}]="virus scanned"
 		publish_module ${module} ${version}
 	fi 
