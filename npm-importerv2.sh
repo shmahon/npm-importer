@@ -144,9 +144,9 @@ function parse_args() {
       NPMVERSION=${1##*@}
       if [[ $NPMVERSION == $NPMPACKAGE ]]; then
          NPMVERSION=""
-			green  "$(indent $align)Importing $NPMPACKAGE package..."
+			green  "\n$(indent $align)Importing $NPMPACKAGE package..."
       else
-			green  "$(indent $align)Importing $NPMPACKAGE version $NPMVERSION package..."
+			green  "\n$(indent $align)Importing $NPMPACKAGE version $NPMVERSION package..."
       fi
    fi
 	yellow -n "$(indent $align)"
@@ -227,7 +227,7 @@ function install_devDependencies() {
 		fi
 
 		# version fixup
-		value=${value//[\^\~]/}
+		value=${value//[\^\~\ ]/}
 
 		# so, just install them here.
 		blue -n "$(indent $align)   - "; white -n "installing $key@$value"
@@ -248,7 +248,7 @@ function install_devDependencies() {
 			grey "$(indent $align)    already installed."
 		fi
 
-	done < <(jq -r 'to_entries | .[] | .key + "=" + .value ' $jsonfile);
+	done < <(jq -r '.dependencies | to_entries | .[] | .key + "=" + .value ' $jsonfile);
 }
 
 
@@ -325,7 +325,7 @@ function install_dependencies()
 		fi
 
 		# version fixup
-		value=${value//[\^\~]/}
+		value=${value//[\^\~\ ]/}
 
 		# so, just install them here.
 		blue -n "$(indent $align)+ "; white -n "installing $key@$value"
@@ -378,25 +378,18 @@ function read_dependencies() {
 	local package=$1
 	local version=$2
 	local pkgpath=${modpaths[${package}${version:+,$version}]}
-	echo "pkgpath = ${pkgpath}"
+
+	# debug
+	grey  "$(indent $align)pkgpath = ${pkgpath}" &> ${output}
 
 	((align+=3))
 
 	# set location for dependency file
-	#local jsonfile=$pkgpath/$package-deps.json
-	local jsonfile=$pkgpath/${package/@*\//}/$(basename $package)-deps.json
+	local pkgjsonfile=$PWD/package.json
 
+	# debug information
 	magenta "$(indent $align)$package${version:+@$version} :: dependencies" &> ${output}
 	grey "$(indent $align) in $PWD." &> ${output}
-	grey "$(indent $align) using $jsonfile" &> ${output}
-
-	# now get a list of all the dependencies from module's package.json 
-	npm view --json $package${version:+@$version} dependencies > ${jsonfile} 2> ${output}
-	if [ $? -ne 0 ]; then
-		red -n "$(indent $align)"
-		red "get_dependencies :: error getting dependencies for $package${version:+@$version}" ;
-		exit;
-	fi
 
 	# add dependencies to our installation list ("report") 
 	local key=""
@@ -411,17 +404,8 @@ function read_dependencies() {
 		fi
 
 		# version fixup
-		value=${value//[\^\~]/}
+		value=${value//[\^\~\ ]/}
 		
-		# noop this section
-		if [ 1 -eq 0 ]; then
-			# 'npm install' didn't include this dependency so skip it
-			if [ ! -d node_modules/$key ]; then
-				blue -n "$(indent $align)+ "; grey "skipping $key@$value"
-				continue
-			fi
-		fi
-
 		# so, just install them here.
 		blue -n "$(indent $align)+ "; white -n "adding $key@$value"
 
@@ -437,29 +421,24 @@ function read_dependencies() {
 		fi
 
 		# recursively add this dependencies, dependencies.
-		#if [ -d $pkgpath/node_modules ]; then
-		if [ -d $(basename $package)/node_modules ]; then
-			#modpaths[${key}${value:+,$value}]=${pkgpath}/node_modules
-			grey "    path :: ./${package#@*\/}/node_modules"
-			grey "readlink :: $(readlink -f ./${package#@*\/}/node_modules)"
-			modpaths[${key}${value:+,$value}]=$(echo "$(readlink -f ./${package}/node_modules)")
-			green -n "$(indent $align)       @ " &> ${output}
-		else
-			#modpaths[${key}${value:+,$value}]=${pkgpath}
-			grey "    path :: ./${package/\/$(basename $package)/}"
-			grey "readlink :: $(readlink -f ../${package/\/$(basename $package)/})"
-			modpaths[${key}${value:+,$value}]=$(echo "$(readlink -f ./${package/\/$(basename $package)/})")
-			red -n "$(indent $align)    @ "  &> ${output}
-		fi
-		grey "added modpaths[${key}${value:+,$value}] :: ${modpaths[${key}${value:+,$value}]}"
+		modpaths[${key}${value:+,$value}]=$root_dir/node_modules/$key
+
+		# debug reporting
+		grey -n "$(indent $((align+2)))"
+		grey "added modpaths[${key}${value:+,$value}] :: ${modpaths[${key}${value:+,$value}]}" &> ${output}
+
+		cyan -n "$(indent $((align+2)))"
+		cyan "checking ${modpaths[${key}${value:+,$value}]} for deps..." &> ${output}
+
+		pushd $PWD &> ${output}
+		cd ${modpaths[${key}${value:+,$value}]}
 
 		# get all this dependencies dependencies
-		cyan -n "$(indent $((align-3)))"
-		cyan "checking $modpaths[${key}${value:+,$value}] for deps..." &> ${output}
-		#read_dependencies ${modpaths[${key}${value:+,$value}]} $key $value	
 		read_dependencies $key $value	
 
-	done < <(jq -r 'to_entries | .[] | .key + "=" + .value ' $jsonfile); 
+		popd &> ${output}
+
+	done < <(jq -r '.dependencies | to_entries | .[] | .key + "=" + .value ' $pkgjsonfile); 
 
 	((align-=3))
 }
@@ -471,18 +450,18 @@ function read_dependencies() {
 #---------------------------------
 function get_dependencies() {
 
-   # $1 : the full package path; one up from the module
+   # $1 : the full package path
 	# $2 : the package name
 	# $3 : the package *version* (can be empty)
 	
-	local nodedir=$1
+	local moduledir=$1
 	local package=$2
 	local version=$3
 
 	# record where we started
 	pushd $PWD &> ${output}
 
-	cd $nodedir
+	cd $moduledir
 
 	grey "get_dependencies :: $PWD" &> ${output}
 
@@ -509,25 +488,19 @@ function install_package() {
 	local package=$2
 	local version=$3
 
+	# install the module without caching it in npm-proxy
+	grey "$(indent $align)Installing package locally :: $package${version:+@$version}" &> ${output}
+	npm install -g "$package${version:+@$version}" &> ${output} 
+	
 	# record where we started
 	pushd $PWD &> ${output}
 
 	# go to 'quarantine' directory
 	cd $nodedir
 
-	# install the module without caching it in npm-proxy
-	grey "$(indent $align)Installing package locally :: $package${version:+@$version}" &> ${output}
-	npm install -g "$package${version:+@$version}" &> ${output} 
-	
-	# if this is a compound module name, like @uirouter/angularjs,
-	# then update the $nodedir
-
 	# mark this module as installed
 	modules[${package}${version:+,$version}]="installed"
-	cmppkg=${package/\/$(basename $package)/}
-	cmppkg=${cmppkg:+\/$cmppkg}
-	red "$(indent $align)cmppkg fixup :: $cmppkg"
-	modpaths[${package}${version:+,$version}]=$nodedir/lib/node_modules$cmppkg
+	modpaths[${package}${version:+,$version}]=$PWD
 
 
 	# install all of the devDependencies at the 'global' scope
@@ -540,7 +513,7 @@ function install_package() {
 	fi
 
 	# install all dependencies in package local 'node_modules'
-	get_dependencies $nodedir/lib/node_modules$cmppkg $package $version
+	get_dependencies $nodedir $package $version
 
 	# return to original location
 	popd &> ${output}
@@ -635,7 +608,7 @@ function report() {
 	local key;
 
 	# just create a module report
-	echo -e "\n\n"
+	echo -en "\n"
 	magenta "$(indent $align)Module and Dependency Report: $1"
 	white -n "$(indent $align)"
 	white "-------------------------------------------------------------------------------------------------"
@@ -652,7 +625,7 @@ function report() {
 	done
 	white -n "$(indent $align)"
 	white "-------------------------------------------------------------------------------------------------"
-	echo -e "\n\n"
+	echo -en "\n"
 }
 
 
@@ -666,6 +639,8 @@ nocredFlag='false'
 rebuildFlag=''
 align=0
 quarantine="/data/npm-quarantine"
+root_dir="/data/npm-quarantine/lib/node_modules"
+
 
 declare -A modules   # an array with modules[<package name>,<package version>] = <status>
 declare -A devdeps   # an array with devdeps[<package name>,<package version>] = <path>
@@ -710,7 +685,6 @@ fi
 #--------------------------------------
 # ensure proper NPM configuration
 #--------------------------------------
-config_npmrc 'safe' 
 mkdir -p $quarantine                # setup sandbox to work in
 npm config set prefix $quarantine
 export PATH=$quarantine/bin:$PATH
@@ -722,16 +696,20 @@ export PATH=$quarantine/bin:$PATH
 
 config_npmrc 'open' # Caution : npm set to access the internet registry
 
+# update the root package dir
+root_dir="$root_dir/$NPMPACKAGE"
+
 # download the package with dependencies.
-install_package ${quarantine} ${NPMPACKAGE} ${NPMVERSION} 
+echo -en "\n"
+install_package ${root_dir} ${NPMPACKAGE} ${NPMVERSION} 
 
 # advertising
-white -n "installation of ${NPMPACKAGE}@${NPMVERSION}"; success;
-report ${NPMPACKAGE}@${NPMVERSION} 'true'
+((align+=3))
+report ${NPMPACKAGE}@${NPMVERSION} 'true' &> ${output}
+white -n "\n$(indent $align)installation of ${NPMPACKAGE}@${NPMVERSION}"; success;
 
 
 # this requires your Crowd credentials
-config_npmrc 'safe'
 if [ $nocredFlag == "false" ]; then
 	magenta "Please verify your credentials for http://nexus.vsi-corp.com:8888/repository/npm-mpf/ ::"
 	npm adduser --registry=http://nexus.vsi-corp.com:8888/repository/npm-mpf/  
@@ -742,10 +720,10 @@ export PATH=$quarantine/bin:$PATH
 #--------------------------------------
 # Virus Scanning and Publishing
 #--------------------------------------
-green "\n\n$(indent $align)Publishing $NPMPACKAGE and its dependencies to 'npm-mpf' nexus repo"
-white -n "$(indent $align)"
-white "-------------------------------------------------------------------------------------------"
-(align+=3)
+green "\n$(indent $align)Publishing $NPMPACKAGE and its dependencies to 'npm-mpf' nexus repo"
+blue -n "$(indent $align)"
+blue "-------------------------------------------------------------------------------------------"
+config_npmrc 'safe'
 for key in ${!modules[@]}
 do
 	# get module and version from key
@@ -756,8 +734,8 @@ do
 	fi
 
 	# advertise
-	green -n "$(indent $align)-" 
-	white "$(indent $align) ${module}${version:+@$version}"
+	yellow -n "\n$(indent $align) - " 
+	white "${module}${version:+@$version}"
 	(( align+=2 ))
 
 	# early skip for modules that are already imported
@@ -771,7 +749,8 @@ do
 
 	# if we're here than we need to scan and import
 	pushd $PWD &> ${output}
-	moduledir="${modpaths[${module}${version:+,$version}]}/${module}"
+	moduledir="${modpaths[${module}${version:+,$version}]}"
+	
 	cd $moduledir
    
 	# scan the downloaded software

@@ -220,16 +220,13 @@ do
 
 	# version fixup
 	version=${value//[\^\~]/}
-	echo "value = $value"
-	echo "value = ${key}${version:+@$version}"
+	grey "value = $value" &> ${output}
+	grey "value = ${key}${version:+@$version}" &> ${output}
 	
 	# just use the npm-importer script
 	dbgswitch="fred"
 	if [ $debugFlag -gt 0 ]; then dbgswitch="-d"; else dbgswitch=""; fi
-	grey "debugFlag = $debugFlag :: dbgswitch = $dbgswitch"
+	grey "debugFlag = $debugFlag :: dbgswitch = $dbgswitch" &> ${output}
 	npm-importer $dbgswitch --align 5 --nocred --rebuild-quarantine true $(echo "$key${value:+@$version}")
-
-
-	yellow "abort..." ; exit
 
 done < <(jq -r '.dependencies | to_entries | .[] | .key + "=" + .value ' $NPMDIR/$jsonfile); 
