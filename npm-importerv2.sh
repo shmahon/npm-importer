@@ -1,37 +1,25 @@
 #!/bin/bash
 # vim: set ts=3 sw=3 autoindent smartindent:
 
+# These notes consider how to download a "release" of TOA
+# for purposes of uploading it to codenest.
+#
 # DEPENDENCIES:  you will need you yum install 'jq'
-#                you will need 'yarn' installed
-
 #
+#  Approach as of 03/10/2020
 #
-#  Approach as of 03/03/2020
-#    1. install the package into a quarantine directory
-#    2. I think this should install dependendencies in the 
-#       'npm_modules' directory of the installed package.
-#        Example:
-#           url=$(npm view --json babylon@6.18.0 repository.url | tr -d '"'
-#           commit=$(npm view --json babylon@6.18.0 gitHead | tr -d '"'
-#           yarn add git+https://github.com/babel/babylon.git#da66d3f65b0d305c0bb042873d57f26f0c0b0538
-#    3.  For every development dependency
-#           cd ~/.global_modules/lib/babylon
-#           # get a list of devDependencies  
-#           dependencies=$(npm view --json $2 dependencies | \
-#                     grep -vE "[{}]" | cut -d":" -f1 | tr -d '"')
-#           for each dependency
-#                npm install -g <dependency>
+#     1.  Install the base package unless its a directory in 
+#         which case, skip right to installing its dependencies.
+#     2.  If its a package (not a directory), then assume that an
+#         install also brings down its immediated dependencies.
+#     3.  Scan everything.
+#     4.  Make a list of all the dependencies and publish them.
 #
-#    4.  For every 
 
 # import our utilities
 DIR="${BASH_SOURCE%/*}"
 if [[ ! -d "$DIR" ]]; then DIR="$PWD"; fi
    . "$DIR/term_color.sh"
-
-
-# These notes consider how to download a "release" of TOA
-# for purposes of uploading it to codenest.
 
 
 # ======================== [ function definitions ] ===========================
@@ -68,6 +56,23 @@ function usage() {
    grey  "       allow stdout to go to the terminal instead of        "
    grey  "       /dev/null                                            "
    grey  "                                                            "
+   grey  "  --align <integer>                                         "
+   grey  "       changes the space alignment of output for use when   "
+   grey  "       calling this script from another script.             "
+   grey  "                                                            "
+   grey  "  --dev  *** This isn't functional right now ***            "
+   grey  "       also install the development dependencies.           "
+   grey  "                                                            "
+   grey  "  --rebuild-quarantine [true|false]                         "
+   grey  "       just a flag to force the removal and rebuild of      "
+   grey  "       the quarantine directory.                            "
+   grey  "                                                            "
+   grey  "  --nocred                                                  "
+   grey  "       assume that the user has already registered          "
+   grey  "       credentials for the NPM registry and do not ask      "
+   grey  "       to do it again.                                      "
+   grey  "       assume that the user has already registered          "
+   grey  "                                                            "
    grey  "  -h : print the usage message and exit.                    "
    grey  "                                                            "
    green "============================================================"
@@ -84,7 +89,7 @@ function parse_args() {
    name="${0##*/}"
 
    # use getopt to do most of the work
-   TEMP=`getopt -o hd --long debug,dev -n $name -- "$@"`
+   TEMP=`getopt -o hd --long debug,dev,nocred,rebuild-quarantine:,align: -n $name -- "$@"`
    # catch any errors from getopt
    if [ $? -ne 0 ]; then
       usage
@@ -101,6 +106,24 @@ function parse_args() {
 
 			--dev ) devFlag='true' ; shift ;;
 
+			# assume the user has already provided NPM registry credentials
+			--nocred ) nocredFlag='true' ; shift ;;
+
+			# option to automatically control the rebuilding of the quarantine directory
+			--rebuild-quarantine )
+			   case "$2" in
+					true ) rebuildFlag='true'  ; shift 2 ;;
+				  false ) rebuildFlag='false' ; shift 2 ;;
+				      * ) red "--rebuild-quarantine requires a 'true' or 'false' paramater" ; usage ;;
+				esac ;;
+				
+			# an option that controls the column alignment of output
+			--align )
+				case "$2" in
+					"" ) red "--align requires an integer parameter" ; usage ;;
+					*  ) align=$2; shift 2 ;;
+				esac ;;
+
          # print the usage message
          -h) shift ; usage; break ;;
 
@@ -114,18 +137,19 @@ function parse_args() {
 
    # if not cleanup, then get a module argument to add to the venv
    if [ $# -lt 1 ]; then
-      red "no npm package specified for import!"
+		red $(indent $align)"no npm package specified for import!"
 		usage
-   else
+	else
       NPMPACKAGE=${1%%@[\^0-9]*}
-		NPMVERSION=${1##*@}
-		if [[ $NPMVERSION == $NPMPACKAGE ]]; then
-			NPMVERSION=""
-			green  "Importing $NPMPACKAGE package..."
-		else
-			green  "Importing $NPMPACKAGE version $NPMVERSION package..."
-		fi
+      NPMVERSION=${1##*@}
+      if [[ $NPMVERSION == $NPMPACKAGE ]]; then
+         NPMVERSION=""
+			green  "$(indent $align)Importing $NPMPACKAGE package..."
+      else
+			green  "$(indent $align)Importing $NPMPACKAGE version $NPMVERSION package..."
+      fi
    fi
+	yellow -n "$(indent $align)"
    yellow "-------------------------------------------------------------------"
 }
 
@@ -152,7 +176,7 @@ function check_dep() {
 	fi
 
 	((align+=3))
-	grey "$(indent $align)check_dep :: running in $PWD :: checking $pkgver"
+	grey "$(indent $align)check_dep :: running in $PWD :: checking $pkgver" &> ${output}
 	grey ".dependencies.\"$package\".version :: $(npm ls $pkgver --depth=0 --json | jq '.dependencies."$package".version')" 
 	grey "\"$package\".version               :: $(npm ls $pkgver --depth=0 --json | jq '."$package".version')" 
 	case "$scope" in
@@ -288,7 +312,7 @@ function install_dependencies()
 
 	# install local to the package
 	cd `dirname ${jsonfile}`
-	grey "$(indent $align)pkg path = ${PWD}"
+	grey "$(indent $align)pkg path = ${PWD}" &> ${output}
 
 	# install dependencies; package local installation
 	while IFS== read -r key value;
@@ -338,7 +362,106 @@ function install_dependencies()
 		fi
 
 	done < <(jq -r 'to_entries | .[] | .key + "=" + .value ' $(basename $jsonfile) )
+}
 
+
+#---------------------------------
+#  
+#
+#---------------------------------
+function read_dependencies() {
+
+	#local pkgpath=$1
+	#local package=$2
+	#local version=$3
+
+	local package=$1
+	local version=$2
+	local pkgpath=${modpaths[${package}${version:+,$version}]}
+	echo "pkgpath = ${pkgpath}"
+
+	((align+=3))
+
+	# set location for dependency file
+	#local jsonfile=$pkgpath/$package-deps.json
+	local jsonfile=$pkgpath/${package/@*\//}/$(basename $package)-deps.json
+
+	magenta "$(indent $align)$package${version:+@$version} :: dependencies" &> ${output}
+	grey "$(indent $align) in $PWD." &> ${output}
+	grey "$(indent $align) using $jsonfile" &> ${output}
+
+	# now get a list of all the dependencies from module's package.json 
+	npm view --json $package${version:+@$version} dependencies > ${jsonfile} 2> ${output}
+	if [ $? -ne 0 ]; then
+		red -n "$(indent $align)"
+		red "get_dependencies :: error getting dependencies for $package${version:+@$version}" ;
+		exit;
+	fi
+
+	# add dependencies to our installation list ("report") 
+	local key=""
+	local value=""
+	while IFS== read -r key value;
+	do 
+
+		# check for empty deps
+		if [ -z $key ]; then
+			echo "key => x${key}x"
+			break
+		fi
+
+		# version fixup
+		value=${value//[\^\~]/}
+		
+		# noop this section
+		if [ 1 -eq 0 ]; then
+			# 'npm install' didn't include this dependency so skip it
+			if [ ! -d node_modules/$key ]; then
+				blue -n "$(indent $align)+ "; grey "skipping $key@$value"
+				continue
+			fi
+		fi
+
+		# so, just install them here.
+		blue -n "$(indent $align)+ "; white -n "adding $key@$value"
+
+		# only add this dependency if not already in our list
+		if [[ ! -z "${modules[${key}${value:+,$value}]:-}" ]]; then
+			red " x"
+
+			# no need to check for child dependencies
+			continue
+		else
+			green " *"
+			modules[${key}${value:+,$value}]="installed"
+		fi
+
+		# recursively add this dependencies, dependencies.
+		#if [ -d $pkgpath/node_modules ]; then
+		if [ -d $(basename $package)/node_modules ]; then
+			#modpaths[${key}${value:+,$value}]=${pkgpath}/node_modules
+			grey "    path :: ./${package#@*\/}/node_modules"
+			grey "readlink :: $(readlink -f ./${package#@*\/}/node_modules)"
+			modpaths[${key}${value:+,$value}]=$(echo "$(readlink -f ./${package}/node_modules)")
+			green -n "$(indent $align)       @ " &> ${output}
+		else
+			#modpaths[${key}${value:+,$value}]=${pkgpath}
+			grey "    path :: ./${package/\/$(basename $package)/}"
+			grey "readlink :: $(readlink -f ../${package/\/$(basename $package)/})"
+			modpaths[${key}${value:+,$value}]=$(echo "$(readlink -f ./${package/\/$(basename $package)/})")
+			red -n "$(indent $align)    @ "  &> ${output}
+		fi
+		grey "added modpaths[${key}${value:+,$value}] :: ${modpaths[${key}${value:+,$value}]}"
+
+		# get all this dependencies dependencies
+		cyan -n "$(indent $((align-3)))"
+		cyan "checking $modpaths[${key}${value:+,$value}] for deps..." &> ${output}
+		#read_dependencies ${modpaths[${key}${value:+,$value}]} $key $value	
+		read_dependencies $key $value	
+
+	done < <(jq -r 'to_entries | .[] | .key + "=" + .value ' $jsonfile); 
+
+	((align-=3))
 }
 
 
@@ -357,31 +480,14 @@ function get_dependencies() {
 	local version=$3
 
 	# record where we started
-	((align+=3))
 	pushd $PWD &> ${output}
 
-	# go to 'node_modules' directory
 	cd $nodedir
 
-	magenta "$(indent $align)$package${version:+@$version} :: dependencies"
+	grey "get_dependencies :: $PWD" &> ${output}
 
-	# now get a list of all the dependencies from module's package.json 
-	npm view --json $package${version:+@$version} dependencies > $package/deps.json 2> ${output}
-	if [ $? -ne 0 ]; then
-		red "get_dependencies :: error getting dependencies for $package${version:+@$version}" ;
-		exit;
-	fi
-
-	((align+=3))
-	# check if no dependencies
-	if [ ! -s $package/deps.json ]; then
-		white "$(indent $align)no dependencies"
-	else
-		# do the real work
-		install_dependencies ${PWD}/$package/deps.json
-	fi
-	((align-=3))
-	((align-=3)) # for some reason, this causes $? = 1
+	# get a recursive list of all dependencies for this package
+	read_dependencies $package $version
 
 	# go back to where we started
 	popd &> ${output}
@@ -410,12 +516,18 @@ function install_package() {
 	cd $nodedir
 
 	# install the module without caching it in npm-proxy
-	grey "$(indent $align)Installing package locally :: $package${version:+@$version}"
+	grey "$(indent $align)Installing package locally :: $package${version:+@$version}" &> ${output}
 	npm install -g "$package${version:+@$version}" &> ${output} 
+	
+	# if this is a compound module name, like @uirouter/angularjs,
+	# then update the $nodedir
 
 	# mark this module as installed
-	modules[${package}${version:+,$version}]="verified"
-	modpaths[${package}${version:+,$version}]=$PWD/lib/node_modules
+	modules[${package}${version:+,$version}]="installed"
+	cmppkg=${package/\/$(basename $package)/}
+	cmppkg=${cmppkg:+\/$cmppkg}
+	red "$(indent $align)cmppkg fixup :: $cmppkg"
+	modpaths[${package}${version:+,$version}]=$nodedir/lib/node_modules$cmppkg
 
 
 	# install all of the devDependencies at the 'global' scope
@@ -428,7 +540,7 @@ function install_package() {
 	fi
 
 	# install all dependencies in package local 'node_modules'
-	get_dependencies $nodedir/lib/node_modules $package
+	get_dependencies $nodedir/lib/node_modules$cmppkg $package $version
 
 	# return to original location
 	popd &> ${output}
@@ -440,57 +552,28 @@ function install_package() {
 #---------------------------------
 function publish_module() {
 
-	# $1 : the directory (one up from package)
-	# $2 : the package name (directory name of package)
-	# $3 : the package *version* (can be empty)
+	# $1 : the package name (directory name of package)
+	# $2 : the package *version* (can be empty)
 
-	# record where we started
-	pushd $PWD &> ${output}
+	# debug
+	yellow -n "$(indent $align)publishing module :: ${1} , version :: ${2}"
 
-
-	# noop this block of code
-	if [ 1 -eq 0 ]; then
-		if [[ "${2}" == "${NPMPACKAGE}" ]]; then
-			cd $1/lib/node_modules/${NPMPACKAGE}
+	# skip modules that have already been published
+	npm view ${1}${2:+@$2} &> /dev/null
+	if [ $? -eq 0 ]; then
+		grey "$(indent $align)${1}${2:+@$2} :: already published" &> ${output}
+		modules[${key}]=$(echo "${modules[${1}${2:+,$2}]},published")
+		success 60
+	else
+		npm publish --access public --ignore-scripts &> ${output}
+		if [ $? -eq 0 ]; then
+			success 60
+			modules[${1}${2:+,$2}]=$(echo "${modules[${1}${2:+,$2}]},published")
 		else
-			# assume we are installing a dependency
-			cd $1/lib/node_modules/${NPMPACKAGE}/node_modules/$2
+			failure 60
+			modules[${1}${2:+,$2}]=$(echo "${modules[${1}${2:+,$2}]},not published")
 		fi
 	fi
-
-	cd $1/$2
-
-	yellow -n "publishing ${2}"
-	npm publish --access public --ignore-scripts &> ${output}
-	if [ $? -eq 0 ]; then
-		success	
-		modules[${2}${3:+,$3}]="published"
-	else
-		failure
-		modules[${2}${3:+,$3}]="failed"
-	fi
-
-	# return to original location
-	popd &> ${output}
-}
-
-
-#---------------------------------
-
-#---------------------------------
-function does_exist() {
-
-	# just create a module report
-	magenta "check publication of $1@$2 on $3:" 
-	white   "--------------------------------------------"
-	npm view "$1@$2" --registry=$3
-	cyan -n "$(indent $((align+3))) $1@$2 : "
-	if [ $? -eq 0 ]; then
-		green "published."
-	else
-		red "unpublished"
-	fi
-	white   "--------------------------------------------"
 }
 
 
@@ -513,7 +596,7 @@ function config_npmrc() {
 		# 'safe'  : point to http://nexus.vsi-corp.com:8888/repository/npm-mpf/
 		#           normal state for 'secure' development
 		safe )
-		   white -n "$(indent 5)npmrc config :: "; green "safe";
+			white -n "$(indent $((align+5)))npmrc config :: "; green "safe";
 			npm config set proxy "http://nexus.vsi-corp.com:8888";
 			npm config set https-proxy "http://nexus.vsi-corp.com:8888";
 			npm config set registry "http://nexus.vsi-corp.com:8888/repository/npm-mpf/";
@@ -521,7 +604,7 @@ function config_npmrc() {
 		# 'proxy' : point to http://nexus.vsi-corp.com:8888/repository/npm-proxy/
 		#           used for caching local copies for evaluation
 		proxy )
-		   white -n "$(indent 5)npmrc config :: "; yellow "proxy";
+			white -n "$(indent $((align+5)))npmrc config :: "; yellow "proxy";
 			npm config set proxy "http://nexus.vsi-corp.com:8888";
 			npm config set https-proxy "http://nexus.vsi-corp.com:8888";
 			npm config set registry "http://nexus.vsi-corp.com:8888/repository/npm-proxy/";
@@ -530,13 +613,13 @@ function config_npmrc() {
 		#           used for getting direct access to internet NPM registry for
 		#           virus scanning
 		open )
-		   white -n "$(indent 5)npmrc config :: "; red "open";
+			white -n "$(indent $((align+5)))npmrc config :: "; red "open";
 			npm config delete proxy;
 			npm config delete https-proxy;
 			npm config delete registry;
 			npm config delete strict-ssl; ;;
 
-		* ) red "config_npmrc :: invalid paramater '$1' provided.  Aborting."; exit ;;
+		* ) red "$(indent $align)config_npmrc :: invalid paramater '$1' provided.  Aborting."; exit ;;
 	esac
 }
 
@@ -546,15 +629,32 @@ function config_npmrc() {
 #---------------------------------
 function report() {
 
+	# $1 - the module that is being installed
+	# $2 - flag for printing the paths
+	local flag=${2:-'false'}
+	local key;
+
 	# just create a module report
-	magenta "Module and Dependency Report:"
+	echo -e "\n\n"
+	magenta "$(indent $align)Module and Dependency Report: $1"
+	white -n "$(indent $align)"
 	white "-------------------------------------------------------------------------------------------------"
 	for key in ${!modules[@]}
 	do
-		blue "$key $(indent 40)-> ${modules[${key}]} $(indent 55) :: ${modpaths[${key}]}"
+		offset=${offset:-$(( 40+${#modules[${key}]}+5 ))}
+		offset=$(( ${#modules[${key}]} > $((offset-40-5)) ?  $((40+${#modules[${key}]}+5)) : offset ))
+		blue -n "$(indent $align)$key $(indent 40)-> ${modules[${key}]} $(indent $offset)"
+		case "$flag" in
+			 true ) grey " :: ${modpaths[${key}]}"; ;;
+			false ) grey ""; ;; # just add the carriage return
+			    * ) grey ""; ;; # assume 'false'
+		esac
 	done
+	white -n "$(indent $align)"
 	white "-------------------------------------------------------------------------------------------------"
+	echo -e "\n\n"
 }
+
 
 # ======================== [ script begins here ] ===========================
 
@@ -562,6 +662,8 @@ NPMPACKAGE=""
 NPMVERSION=""
 output=/dev/null
 devFlag='false'
+nocredFlag='false'
+rebuildFlag=''
 align=0
 quarantine="/data/npm-quarantine"
 
@@ -583,21 +685,26 @@ trap 'res=$?; config_npmrc 'safe'; export PATH=$oldpath; exit $res' INT EXIT
 # ensure local installation
 #    - no escalated privileges
 #--------------------------------------
-cd ${HOME}
 if [ -d $quarantine ]; then
-	echo "$quarantine already exists"
-	while true; do
-		cmode $fg_cyan
-		read -p "    Do you wish to erase it before starting? [Y/N] :: " yn
+	if [ $rebuildFlag == "" ] ; then
+		echo -e "$(indent $align)$quarantine already exists"
+		while true; do
+			cmode $fg_cyan
+			read -p "    Do you wish to erase it before starting? [Y/N] :: " yn
 
-		# verify response
-		case $yn in
-			[Y]* ) rm -rf $quarantine; break;;
-			[N]* ) break ;;
-            * ) grey "      Please answer Yes or No";;
-		esac
-	done
-	cmode $reset
+			# verify response
+			case $yn in
+				[Y]* ) rm -rf $quarantine; break;;
+				[N]* ) break ;;
+				   * ) grey "$(indent $align)      Please answer Yes or No";;
+			esac
+		done
+		cmode $reset
+	elif [ $rebuildFlag == "true" ]; then
+		rm -rf $quarantine;
+	else
+		echo -e "$(indent $align)using existing $quarantine directory"
+	fi
 fi
 
 #--------------------------------------
@@ -610,70 +717,35 @@ export PATH=$quarantine/bin:$PATH
 
 
 #--------------------------------------
-# ensure NPM tool dependencies met
-#--------------------------------------
-# !! ensure that 'config_npmrc safe' has been run, first
-npm install -g detect-installed
-if [ $? -neq 0 ]; then
-	red "this script requires the 'detect-installed' NPM module."
-	white "$(indent 5)Run 'npm-importer.sh detect-installed' to import it"
-	white "$(indent 5)  and then rerun this script.                      "
-fi
-
-#--------------------------------------
 #  Begin the installation process
 #--------------------------------------
 
-#
-# Caution : npm set to access the internet registry
-# 
-config_npmrc 'open'
+config_npmrc 'open' # Caution : npm set to access the internet registry
 
 # download the package with dependencies.
 install_package ${quarantine} ${NPMPACKAGE} ${NPMVERSION} 
 
 # advertising
 white -n "installation of ${NPMPACKAGE}@${NPMVERSION}"; success;
-report
+report ${NPMPACKAGE}@${NPMVERSION} 'true'
 
-#--------------------------------------
-# Virus Scanning
-#--------------------------------------
- 
-# scan the downloaded software
-LOGFILE="./${NPMPACKAGE/\//_}_clam.log"
-
-cd ${quarantine} 
-green -n "Scanning for viruses ::"
-clamscan -ri ${quarantine} &> "./${LOGFILE}"
-
-# get the value of "Infected lines" 
-MALWARE=$(tail "./${LOGFILE}" | grep Infected |cut -d" " -f3) 
-
-# if the value is not equal to zero, abort!!
-if [[ "$MALWARE" -ne "0" ]];then 
-	failure
-	red "Malware has been detected while scanning ${NPMPACKAGE}!"
-	red "$(indent 3)Aborting the import."
-	yellow "$(indent 5)$NPMPACKAGE will be kept in ~/npm-quarantine."
-	yellow "$(indent 5)Notify an SA immediately to report malware detection."
-	exit 1
-else
-	success
-fi 
-
-
-# add credentials to MPF hosted npm registry
-green "Publishing $NPMPACKAGE and its dependencies to 'npm-mpf' nexus repo"
-
-config_npmrc 'safe'
 
 # this requires your Crowd credentials
-magenta "Please verify your credentials ::"
-npm adduser --registry=http://nexus.vsi-corp.com:8888/repository/npm-mpf/  
+config_npmrc 'safe'
+if [ $nocredFlag == "false" ]; then
+	magenta "Please verify your credentials for http://nexus.vsi-corp.com:8888/repository/npm-mpf/ ::"
+	npm adduser --registry=http://nexus.vsi-corp.com:8888/repository/npm-mpf/  
+fi
 
 export PATH=$quarantine/bin:$PATH
 
+#--------------------------------------
+# Virus Scanning and Publishing
+#--------------------------------------
+green "\n\n$(indent $align)Publishing $NPMPACKAGE and its dependencies to 'npm-mpf' nexus repo"
+white -n "$(indent $align)"
+white "-------------------------------------------------------------------------------------------"
+(align+=3)
 for key in ${!modules[@]}
 do
 	# get module and version from key
@@ -682,19 +754,52 @@ do
 	if [[ $version == $module ]]; then
 		version=""
 	fi
-	grey "publishing module :: $module , version :: $version."
 
-	# skip modules that have already been published
-	npm view ${module}@${version} &> /dev/null
+	# advertise
+	green -n "$(indent $align)-" 
+	white "$(indent $align) ${module}${version:+@$version}"
+	(( align+=2 ))
+
+	# early skip for modules that are already imported
+	npm view ${module}${version:+@$version} &> /dev/null
 	if [ $? -eq 0 ]; then
-		grey "${module}@${version} :: already published"
-		modules[${key}]="published"
+		grey " $(indent $align)already published :: ${module}."
+		modules[${key}]=$(echo "${modules[${module}${version:+,$version}]},published")
+		(( align-=2 ))
+		continue
 	fi
 
-	publish_module ${modpaths[${module}${version:+,$version}]} ${module} ${version}
-	modules[${key}]="published"
+	# if we're here than we need to scan and import
+	pushd $PWD &> ${output}
+	moduledir="${modpaths[${module}${version:+,$version}]}/${module}"
+	cd $moduledir
+   
+	# scan the downloaded software
+	blue -n "$(indent $align) virus scanning :: ${module}."
+	LOGFILE="$module-$(date +%T-%m%d%Y).clam"
+	clamscan -ri "$moduledir" > "./$LOGFILE"
+
+	# get the value of "Infected lines" 
+	MALWARE=$(tail ${LOGFILE} | grep Infected |cut -d" " -f3) 
+
+	# if the value is not equal to zero, abort!!
+	if [[ "$MALWARE" -ne "0" ]];then 
+		failure
+		red "$(indent $align)Malware has been detected while scanning ${module}!"
+		red "$(indent $((align+3)))Aborting the import."
+		yellow "$(indent $((align+5)))$module will be kept in $moduledir"
+		yellow "$(indent $((align+5)))Notify an SA immediately to report malware detection!"
+
+		modules[${key}]="virus detected"
+	else
+		success
+		modules[${key}]="virus scanned"
+		publish_module ${module} ${version}
+	fi 
+
+	popd &> ${output}
+	(( align-=2 ))
 done
 
 # summary report
 report
-#yellow "debug abort" ; exit;

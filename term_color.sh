@@ -195,7 +195,7 @@ function success() {
 	#echo "\$# => $#"
 
 	# assume first parameter is the indent
-	if [ $# -gt 1 ]; then
+	if [ $# -gt 0 ]; then
 		indent $1
 		shift
 	else
@@ -214,7 +214,7 @@ function failure() {
 	eval set -- "$PARAMS"
 
 	# assume first parameter is the indent
-	if [ $# -gt 1 ]; then
+	if [ $# -gt 0 ]; then
 		indent $1
 		shift
 	else
