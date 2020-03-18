@@ -140,7 +140,7 @@ function parse_args() {
 		red $(indent $align)"no npm package specified for import!"
 		usage
 	else
-      NPMPACKAGE=${1%%@[\^>~][0-9]*}
+		NPMPACKAGE=$(echo $1 | sed -rn 's/(.*)@[\^>~]?([0-9].?){1,3}/\1/p') # ${1%%@[\^>~]*[0-9]*}
       NPMVERSION=${1##*@}
       if [[ $NPMVERSION == $NPMPACKAGE ]]; then
          NPMVERSION=""
@@ -633,7 +633,7 @@ nocredFlag='false'
 rebuildFlag=""
 align=0
 quarantine="/data/npm-quarantine"
-root_dir="/data/npm-quarantine/lib/node_modules"
+root_dir="${quarantine}/lib/node_modules"
 
 
 declare -A modules   # an array with modules[<package name>,<package version>] = <status>
