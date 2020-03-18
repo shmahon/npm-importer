@@ -55,7 +55,9 @@ function usage() {
    grey  "  -p | --prefix                                             "
    grey  "       change where NPM will install your 'global' NPMs.    "
    grey  "       By default, this script will not change any prefix   "
-   grey  "       setting you already have.                            "
+   grey  "       setting you already have. If you provide 'reset' as  "
+   grey  "       the argument to this switch, your 'prefix' will be   "
+	grey  "       deleted.                                             "
    grey  "                                                            "
    grey  "  -h : print the usage message and exit.                    "
    grey  "                                                            "
@@ -91,7 +93,6 @@ function parse_args() {
          # process an option without a required argument
          -p | --prefix ) 
              case "$2" in
-                "" ) red "$1 requires an argument." ; usage ;;
                 * ) prefix=$2 ; shift 2 ;;
              esac ;;
 
@@ -170,9 +171,14 @@ esac
 
 # update npm 'prefix' if user provided it
 if [ ! -z $prefix ]; then
-	white "$(indent 5)setting prefix => $prefix"
 
-	# will create the directory if it doesn't exist
-	npm config set prefix $prefix
+	if [[ "$prefix" == "reset" ]]; then
+		red -n "$(indent 5)deleting your current prefix : "; white "$(npm config get prefix)"
+		npm config delete prefix
+	else
+		# will create the directory if it doesn't exist
+		npm config set prefix $prefix
+		white "$(indent 5)setting prefix => $prefix"
+	fi
 fi
 
