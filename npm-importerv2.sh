@@ -140,7 +140,7 @@ function parse_args() {
 		red $(indent $align)"no npm package specified for import!"
 		usage
 	else
-      NPMPACKAGE=${1%%@[\^0-9]*}
+      NPMPACKAGE=${1%%@[\^>~][0-9]*}
       NPMVERSION=${1##*@}
       if [[ $NPMVERSION == $NPMPACKAGE ]]; then
          NPMVERSION=""
@@ -529,7 +529,7 @@ function publish_module() {
 	# $2 : the package *version* (can be empty)
 
 	# get the 'actual' installed version, can be different than expected
-	yellow -n "$(indent $align)publishing module :: ${1} , version :: ${2}"
+	yellow -n "$(indent $align)publishing :: ${1}, version :: ${2}"
 	white -n " [" ; green -n "$actualver"; white -n "]"
 
 	# skip modules that have already been published
@@ -630,7 +630,7 @@ NPMVERSION=""
 output=/dev/null
 devFlag='false'
 nocredFlag='false'
-rebuildFlag=''
+rebuildFlag=""
 align=0
 quarantine="/data/npm-quarantine"
 root_dir="/data/npm-quarantine/lib/node_modules"
@@ -655,7 +655,7 @@ trap 'res=$?; config_npmrc 'safe'; export PATH=$oldpath; exit $res' INT EXIT
 #    - no escalated privileges
 #--------------------------------------
 if [ -d $quarantine ]; then
-	if [ $rebuildFlag == "" ] ; then
+	if [[ $rebuildFlag == "" ]] ; then
 		echo -e "$(indent $align)$quarantine already exists"
 		while true; do
 			cmode $fg_cyan
@@ -745,13 +745,13 @@ do
 	white "" # just finish the line
 
 	# debug formatting
-	(( align+=2 ))
+	((align+=2))
 
 	# early skip for modules that are already imported
-	if [[ $(npm view --json ${module}${actualver:+@$actualver} version) != "" ]]; then #&> ${output}
+	if [[ $(npm view --json ${module}${actualver:+@$actualver} version 2> ${output}; ) != "" ]]; then #&> ${output}
 		grey " $(indent $align)already published :: ${module}@${actualver}."
 		modules[${key}]=$(echo "${modules[${module}${version:+,$version}]},published")
-		(( align-=2 ))
+		((align-=2))
 		continue
 	fi
 	
@@ -765,7 +765,6 @@ do
 
 	# get the value of "Infected lines" 
 	MALWARE=$(tail ${LOGFILE} | grep Infected |cut -d" " -f3) 
-
 	# if the value is not equal to zero, abort!!
 	if [[ "$MALWARE" -ne "0" ]];then 
 		failure 80
@@ -779,10 +778,12 @@ do
 		success 80
 		modules[${key}]="virus scanned"
 		publish_module ${module} ${version}
+		((align-=2))
 	fi 
+	
+	((align-=2))
 
 	popd &> ${output}
-	(( align-=2 ))
 done
 
 # summary report
