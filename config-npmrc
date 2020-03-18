@@ -1,0 +1,176 @@
+#!/bin/bash                                                                                                   
+# vim: set ts=3 sw=3 autoindent smartindent:   
+
+# import our utilities                                                                                        
+DIR="${BASH_SOURCE%/*}"                                                                                       
+if [[ ! -d "$DIR" ]]; then DIR="$PWD"; fi                                                                     
+   . "$DIR/term_color.sh"      
+
+# ======================== [ function definitions ] ===========================                               
+
+#---------------------------------
+
+#---------------------------------
+function usage() {
+
+   green "Usage: $0 <npmrc mode>"
+   green "============================================================"
+   grey  "  This script is intended to setup my npmrc for one of the  "
+   grey  "  following modes:                                          "
+   grey  "                                                            "
+   grey  "     * 'safe' mode   : limits all npm commnads to the       "
+   grey  "                       non-proxied 'npm-mpf' repository.    "
+   grey  "                                                            "
+   grey  "     * 'proxy' mode  : sets up npmrc to use our proxy       "
+   grey  "                       repository at 'npm-proxy'.  Not      "
+   grey  "                       really sure why you need to do this. "
+   grey  "                                                            "
+   grey  "     * 'open' mode   : sets npm repo to https://registry.npmjs.org."
+   grey  "                       Useful if you are trying to download "
+   grey  "                       a package from the internet for      "
+   grey  "                       purposes of virus scanning and       "
+   grey  "                       importing it to the local network.   "
+   grey  "                                                            "
+   grey  "  Note:  this script will manipulate your .npmrc config-    "
+   grey  "  ration and then leave it that way.  Make sure you know    "
+   grey  "  what you are doing.  The script *does not* adjust any     "
+   grey  "  settings you may have for other config properties other   "
+   grey  "  than:                                                     "
+   grey  "          - proxy                                           "
+   grey  "          - https-proxy                                     "
+   grey  "          - registry                                        "
+   grey  "          - strict-ssl                                      "
+   grey  "                                                            "
+   red   "  YOU ARE RESPONSIBLE TO VERIFY THE FOLLOWING:              "
+   grey  "                                                            "
+   grey  "      - you understand what this script is doing!           "
+   grey  "      - you ensure that your NPM configuration is valid     "
+   grey  "        after the completion of this script: your registry  "
+   grey  "        must point to 'npm-mpf' for general development!    "
+   grey  "                                                            "
+   grey  "  -d | --debug                                              "
+   grey  "       allow stdout to go to the terminal instead of        "
+   grey  "       /dev/null                                            "
+   grey  "                                                            "
+   grey  "  -p | --prefix                                             "
+   grey  "       allow stdout to go to the terminal instead of        "
+   grey  "                                                            "
+   grey  "  -h : print the usage message and exit.                    "
+   grey  "                                                            "
+   green "============================================================"
+   exit 1
+}
+
+
+#---------------------------------
+
+#---------------------------------
+function parse_args() {
+
+   # get the simplified name of this script for getopt to use when reporting errors
+   name="${0##*/}"
+
+   # use getopt to do most of the work
+   TEMP=`getopt -o hdp: --long debug,prefix: -n $name -- "$@"`
+   # catch any errors from getopt
+   if [ $? -ne 0 ]; then
+      usage
+   fi
+
+   eval set -- "$TEMP"
+
+   while [ $# -gt 0 ]; do
+
+      case "$1" in
+
+         # process an option without a required argument
+         -d | --debug ) output=/dev/stdout ; shift ;;
+
+         # process an option without a required argument
+         -p | --prefix ) 
+             case "$2" in
+                "" ) red "$1 requires an argument." ; usage ;;
+                * ) prefix=$2 ; shift 2 ;;
+             esac ;;
+
+         # print the usage message
+         -h) shift ; usage; break ;;
+
+         # get rid of '--'; the optional params will be in '$@'
+         --) shift ; break ;;
+
+         # handle an error case (have I seen this, yet?)
+         *) red "invalid option: -${OPTARG}[$1] " >&2; shift ;;
+      esac
+   done
+
+
+   # if not cleanup, then get a module argument to add to the venv
+   if [ $# -lt 1 ]; then
+	   red "$name :: called with no arguments"
+	   white "$(indent 5)must provide one of the following:"
+	   white "$(indent 7)'safe'  - set .npmrc to point to npm-mpf repository"
+	   white "$(indent 7)'proxy' - set .npmrc to point to npm-proxy repository"
+	   white "$(indent 7)'open'  - set .npmrc to point to https://registry.npmjs.org/"
+		grey  "$(indent 5)use '$name -h' to get a usage listing."
+		exit
+	else
+		mode=$1
+	fi
+
+	# update the parameter list for main script
+	args=$@
+}
+
+
+#
+# The Script Begins Here!!
+#
+output=/dev/null
+mode=""
+prefix=""
+args=""
+
+parse_args $@
+eval set -- $args
+
+case "$mode" in
+
+  # 'safe'  : point to http://nexus.vsi-corp.com:8888/repository/npm-mpf/
+  #           normal state for 'secure' development
+  safe )
+	 white -n "$(indent 5)npmrc config :: "; green "safe";
+	 npm config set proxy "http://nexus.vsi-corp.com:8888";
+	 npm config set https-proxy "http://nexus.vsi-corp.com:8888";
+	 npm config set registry "http://nexus.vsi-corp.com:8888/repository/npm-mpf/";
+	 npm config set strict-ssl false; ;;
+  # 'proxy' : point to http://nexus.vsi-corp.com:8888/repository/npm-proxy/
+  #           used for caching local copies for evaluation
+  proxy )
+	 white -n "$(indent 5)npmrc config :: "; yellow "proxy";
+	 npm config set proxy "http://nexus.vsi-corp.com:8888";
+	 npm config set https-proxy "http://nexus.vsi-corp.com:8888";
+	 npm config set registry "http://nexus.vsi-corp.com:8888/repository/npm-proxy/";
+	 npm config set strict-ssl false; ;;
+  # 'open'  : point to https://registry.npmjs.org/
+  #           used for getting direct access to internet NPM registry for
+  #           virus scanning
+  open )
+	 white -n "$(indent 5)npmrc config :: "; red "open";
+	 npm config delete proxy;
+	 npm config delete https-proxy;
+	 npm config delete registry;
+	 npm config delete strict-ssl; 
+	 yellow "$(indent 7)caution :: 'npm' commands will now access untrusted internet registry." ;;
+
+  * ) red "config_npmrc :: invalid paramater '$1' provided.  Aborting."; exit ;;
+esac
+
+# update npm 'prefix' if user provided it
+if [ ! -z $prefix ]; then
+	white "$(indent 5)setting prefix => $prefix"
+
+	# will create the directory if it doesn't exist
+	npm config set prefix $prefix
+fi
+
