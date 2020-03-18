@@ -42,7 +42,8 @@ function usage() {
    grey  "       to do it again.                                      "
    grey  "       assume that the user has already registered          "
    grey  "                                                            "
-   grey  "  -h : print the usage message and exit.                    "
+   grey  "  -h | --help                                               "
+   grey  "       print the usage message and exit.                    "
    grey  "                                                            "
    green "============================================================"
    exit 1
@@ -60,7 +61,7 @@ function parse_args() {
    name="${0##*/}"
 
    # use getopt to do most of the work
-   TEMP=`getopt -o hd --long debug,nocred -n $name -- "$@"`
+   TEMP=`getopt -o hd --long help,debug,nocred -n $name -- "$@"`
    # catch any errors from getopt
    if [ $? -ne 0 ]; then
       usage
@@ -79,7 +80,7 @@ function parse_args() {
 			--nocred ) nocredFlag='true' ; shift ;;
 
          # print the usage message
-         -h) shift ; usage; break ;;
+         -h | --help ) shift ; usage; break ;;
 
          # get rid of '--'; the optional params will be in '$@'
          --) shift ; break ;;
