@@ -1,5 +1,5 @@
 #!/bin/bash
-# vim: set ts=3 sw=3 autoindent smartindent:
+# vim: set ts=3 sw=3 et autoindent smartindent:
 
 # These notes consider how to download a "release" of TOA
 # for purposes of uploading it to codenest.
@@ -140,7 +140,8 @@ function parse_args() {
 		red $(indent $align)"no npm package specified for import!"
 		usage
 	else
-		NPMPACKAGE=$(echo $1 | sed -rn 's/(.*)@[\^>~]?([0-9].?){1,3}/\1/p') # ${1%%@[\^>~]*[0-9]*}
+		#NPMPACKAGE=$(echo $1 | sed -rn 's/(.*)@[\^>~]?([0-9]\.?){1,3}/\1/p') # ${1%%@[\^>~]*[0-9]*}
+		NPMPACKAGE=$(echo $1 | sed -rn 's/(.*)@[\^>~]?[0-9]+.*$/\1/p') # ${1%%@[\^>~]*[0-9]*}
       NPMVERSION=${1##*@}
       if [[ $NPMVERSION == $NPMPACKAGE ]]; then
          NPMVERSION=""
@@ -252,69 +253,32 @@ function install_devDependencies() {
 }
 
 
-#------------------------------------------------------------------
-#  NOTE:  this function requires the 'jq' commandline tool
-#
-#  This function should be run at the $quarantine/node_module
-#  level of the directory tree.
-#------------------------------------------------------------------
-function get_devDependencies() {
-
-	# $1 is expected to be the 'quarantine' directory (one up from the package)
-	# $2 is expected to be the npm package to scan for 
-   #    development dependencies, including the version.
-	local nodedir=$1
-	local pkgver=$2
-
-	# record where we started
-	pushd $PWD &> ${output}
-
-	# go to 'node_modules'
-	cd $nodedir
-
-	(( align+=3 ))
-	magenta "$(indent $align)$pkgver :: dev dependencies"
-
-	# now get a list of all the devDependencies from module's package.json 
-	npm view --json $pkgver devDependencies > ./${pkgver%%@[\^0-9]*}/devDeps.json 2> ${output};
-	if [ $? -ne 0 ]; then
-		red "get_devDependencies :: error getting dev dependencies for $pkgver" 
-		exit 1
-	fi
-
-	# check if no dev dependencies
-	if [ ! -s ./${pkgver%%@[\^0-9]*}/devDeps.json ]; then
-		grey "$(indent $align)no dev dependencies"
-	else
-		#install_devDependencies ${pkgver%%@[\^0-9]*}/devDeps.json;
-		install_dependencies ${pkgver%%@[\^0-9]*}/devDeps.json;
-	fi
-	(( align-=3 ))
-
-	# return to where we started
-	popd &> ${output};
-
-}
-
-
 #---------------------------------
 #  
 #
 #---------------------------------
-function install_dependencies()
-{
+function read_dev_dependencies() {
 
-	# $1 : the fully qualified path/file name with json dependencies
-	local jsonfile=$1
+	local moduledir=$1
+	local package=$2
+	local version=$3
 
-	local key
-	local value
+	# set location for dependency file
+	local pkgjsonfile=$PWD/package.json
 
-	# install local to the package
-	cd `dirname ${jsonfile}`
-	grey "$(indent $align)pkg path = ${PWD}" &> ${output}
+	((align+=3))
 
-	# install dependencies; package local installation
+	# debug
+   grey  "$(indent $align)read_dev_dependencies :: pkgpath = ${moduledir}" &> ${output}
+
+
+	# debug information
+	magenta "$(indent $align)$package${version:+@$version} :: dev_dependencies" &> ${output}
+	grey "$(indent $align) in $PWD." &> ${output}
+
+	# add dependencies to our installation list ("report") 
+	local key=""
+	local value=""
 	while IFS== read -r key value;
 	do 
 
@@ -326,42 +290,46 @@ function install_dependencies()
 
 		# version fixup
 		value=${value//[\^\~\ ]/}
-
+		
 		# so, just install them here.
-		blue -n "$(indent $align)+ "; white -n "installing $key@$value"
+		blue -n "$(indent $align)+ "; white -n "adding $key@$value"
 
 		# only add this dependency if not already in our list
 		if [[ ! -z "${modules[${key}${value:+,$value}]:-}" ]]; then
 			red " x"
+
+			# no need to check for child dependencies
+			continue
 		else
 			green " *"
-			modules[${key}${value:+,$value}]="verified"
-			modpaths[${key}${value:+,$value}]=$PWD/node_modules
+
+         # this will install the dev dependency and all of its dependencies
+         # in the original modules's 'node_modules' directory. I think you
+         # should be able to use get_dependencies and read_dependencies
+         # to add them all to our list.
+         npm install "$key${value:+@$value}" &> ${output}
+
+			# now mark it as installed 
+         modules[${key}${value:+,$value}]="installed"
 		fi
 
-		# alread installed ? 
-		check_dep $key@$value 'local'
-		if [ $? -ne 0 ]; then 
-			# this probably should be before the printing above, but ....
-			npm install --global-style $key@$value &> ${output}
+		# add the desired install path for this package.
+		modpaths[${key}${value:+,$value}]=$PWD/node_modules/$key
 
-			# noop for now
-			if [[ devFlag == 'true' ]]; then
-				# install all of the devDependencies at the 'global' scope
-				get_devDependencies $PWD/node_modules $key@$value
-				if [ $? -ne 0 ]; then
-					red "install_dependencies :: get_devDependencies :: failed for $key"; 
-					exit
-				fi
-			fi
+		# debug reporting
+		grey -n "$(indent $((align+2)))"
+		grey "added modpaths[${key}${value:+,$value}] :: ${modpaths[${key}${value:+,$value}]}" &> ${output}
 
-			# recursively add this dependencies, dependencies.
-			get_dependencies $PWD/node_modules $key $value
-		else
-			grey "$(indent $align)    already installed."
-		fi
+		cyan -n "$(indent $((align+2)))"
+		cyan "checking ${modpaths[${key}${value:+,$value}]} for dev deps..." &> ${output}
 
-	done < <(jq -r 'to_entries | .[] | .key + "=" + .value ' $(basename $jsonfile) )
+      # TODO[03/19/20] need to all all the devDeps dependencies to our list
+      # now.
+
+	done < <(jq -r '.devDependencies | to_entries | .[] | .key + "=" + .value ' $pkgjsonfile ); 
+
+	((align-=3))  # this causes a $? == 1 for some reason
+   return 0
 }
 
 
@@ -370,10 +338,6 @@ function install_dependencies()
 #
 #---------------------------------
 function read_dependencies() {
-
-	#local pkgpath=$1
-	#local package=$2
-	#local version=$3
 
 	local package=$1
 	local version=$2
@@ -490,7 +454,7 @@ function install_package() {
 
 	# install the module without caching it in npm-proxy
 	grey "$(indent $align)Installing package locally :: $package${version:+@$version}" &> ${output}
-	npm install -g "$package${version:+@$version}" &> ${output} 
+	npm install -g ${ONLYOPTS} "$package${version:+@$version}" &> ${output} 
 	
 	# record where we started
 	pushd $PWD &> ${output}
@@ -502,18 +466,17 @@ function install_package() {
 	modules[${package}${version:+,$version}]="installed"
 	modpaths[${package}${version:+,$version}]=$PWD
 
+	# install all dependencies in package local 'node_modules'
+	get_dependencies $nodedir $package $version
 
 	# install all of the devDependencies at the 'global' scope
-	if [[ devFlag == 'true' ]]; then
-		get_devDependencies $1/lib/node_modules $package${version:+@$version} 
+	if [[ $devFlag == "true" ]]; then
+		read_dev_dependencies $nodedir $package $version
 		if [ $? -ne 0 ]; then
-			red "install_package :: get_devDependencies :: failed for $package"
+			red "install_package :: read_dev_dependencies :: failed for $package"
 			exit 1
 		fi
 	fi
-
-	# install all dependencies in package local 'node_modules'
-	get_dependencies $nodedir $package $version
 
 	# return to original location
 	popd &> ${output}
@@ -628,7 +591,7 @@ function report() {
 NPMPACKAGE=""
 NPMVERSION=""
 output=/dev/null
-devFlag='false'
+devFlag="false"
 nocredFlag='false'
 rebuildFlag=""
 align=0
@@ -644,11 +607,19 @@ declare -A modpaths  # an array with modpaths[<package name>,<package version] =
 unalias grep &> ${output}
 unalias ls &> ${output}
 
+#
+# argument processing and global var setup
+#
 parse_args $@
 
+if [[ $devFlag == "false" ]]; then
+   ONLYOPTS='--only=production'
+fi
 
+# error handling and exit cleanup
 oldpath=$PATH
 trap 'res=$?; config_npmrc 'safe'; export PATH=$oldpath; exit $res' INT EXIT
+
 
 #--------------------------------------
 # ensure local installation
@@ -699,7 +670,7 @@ install_package ${root_dir} ${NPMPACKAGE} ${NPMVERSION}
 
 # advertising
 ((align+=3))
-report ${NPMPACKAGE}@${NPMVERSION} 'true' &> ${output}
+report ${NPMPACKAGE}@${NPMVERSION} 'true' #&> ${output}
 white -n "\n$(indent $align)installation of ${NPMPACKAGE}@${NPMVERSION}"; success;
 
 
