@@ -35,6 +35,13 @@ function usage() {
    grey  "  -d | --debug                                              "
    grey  "       allow stdout to go to the terminal instead of        "
    grey  "       /dev/null                                            "
+   grey  "                                                            "                                                             
+   grey  "  -c | --cwd                                              "
+   grey  "       allow all 'popd', 'pushd' and other dir commands     "
+   grey  "       to print to stdout instead of default /dev/null      "
+   grey  "                                                            "
+   grey  "  --dev                                                     "                                                             
+   grey  "       also install the development dependencies.           "       
    grey  "                                                            "
    grey  "  --nocred                                                  "
    grey  "       assume that the user has already registered          "
@@ -61,7 +68,7 @@ function parse_args() {
    name="${0##*/}"
 
    # use getopt to do most of the work
-   TEMP=`getopt -o hd --long help,debug,nocred -n $name -- "$@"`
+   TEMP=`getopt -o hdc --long help,cwd,dev,debug,nocred -n $name -- "$@"`
    # catch any errors from getopt
    if [ $? -ne 0 ]; then
       usage
@@ -75,6 +82,12 @@ function parse_args() {
 
          # process an option without a required argument
          -d | --debug ) output=/dev/stdout ; debugFlag=1; shift ;;
+
+         # process an option without a required argument
+         -c | --cwd ) cwdoutput=/dev/stdout ; shift ;;
+
+			# flag to control inclusion of devDependencies ; default to 'false'
+			--dev ) devFlag='true' ; shift ;;
 
 			# assume the user has already provided NPM registry credentials
 			--nocred ) nocredFlag='true' ; shift ;;
@@ -177,7 +190,9 @@ function config_npmrc() {
 NPMPACKAGE=""
 NPMVERSION=""
 output=/dev/null
+cwdoutput=/dev/null
 debugFlag=0
+devFlag="false"
 align=0
 quarantine="/data/npm-quarantine"
 jsonfile=package.json
@@ -224,10 +239,13 @@ do
 	grey "value = $value" &> ${output}
 	grey "value = ${key}${version:+@$version}" &> ${output}
 	
-	# just use the npm-importer script
-	dbgswitch="fred"
+	# transloate options to 'npm-importer' switches and flags
 	if [ $debugFlag -gt 0 ]; then dbgswitch="-d"; else dbgswitch=""; fi
+	if [[ $cwdoutput != "/dev/null" ]]; then dbgswitch="$dbgswitch --cwd"; fi
+	if [[ $devFlag == 'true' ]]; then onlyopt="--dev"; else onlyopt=""; fi
+
+	# just use the npm-importer script
 	grey "debugFlag = $debugFlag :: dbgswitch = $dbgswitch" &> ${output}
-	npm-importer $dbgswitch --align 5 --nocred --rebuild-quarantine true $(echo "$key${value:+@$version}")
+	npm-importer $dbgswitch $onlyopt --align 5 --nocred --rebuild-quarantine true $(echo "$key${value:+@$version}")
 
 done < <(jq -r '.dependencies | to_entries | .[] | .key + "=" + .value ' $NPMDIR/$jsonfile); 

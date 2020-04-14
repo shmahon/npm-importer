@@ -52,8 +52,9 @@ This will import the `color` package that has any version greater than 2.0.0 wit
 All of these switches and flags are optional, but may be useful in either debugging a problem or fine tuning your use of this script for maximum efficiency.
  * `-h|--help` :: print the _help_ or _usage_ message and exit.
  * `-d|--debug` :: collects all the output from debug level messages and bash / terminal commands and presents them as terminal output.  By default, the script redirects all this output to `/dev/null`.
+ * `-c|--cwd` :: much like the `--debug` switch, this switch controls the output from directory-based shell commands like `popd`, `pushd`, `pwd`, etc.  Using this flag will cause all output from those commands to be echoed to `stdout`.  This flag is largely just for development debug and is not needed for any normal operation.
  * `--align` :: This is just an output formatting flag.  It requires an integer argument and just sets an 'indent' of that many spaces at the beginning of every console output line.
- * `--dev` :: **This isn't functional yet**, but will be a flag that allows you to also download, scan and publish all development dependency packages like you would with `npm install`.  By default, this script acts like `npm install --only=production -g`.
+ * `--dev` :: A switch that allows you to also download, scan and publish all development dependency packages like you would with `npm install`.  By default, this script acts like `npm install --only=production -g`.  This switch effectively causes a `npm install --development` to be done in the main package; pulling in all its development dependencies and, consequently, their dependencies.
  * `--rebuild-quarantine` :: The default behavior for this script is to check if the _default_ quarantine directory, `/data/npm-quarantine`, exists.  If it does, it will prompt the user to either reuse the directory and its contents or remove the existing directory and recreate it.  This flag is a binary flag that automatically selects the 'force and recreate' mode.  The quarantine directory location is not settable at this time via commandline switches and flags, but is easily settable by searching for `^quarantine=` and replacing the `/data/npm-quarantine` with whatever the user desires (or you could add a commandline flag if you are feeling industrious).
  * `--nocred` :: stands for 'no credentials'.  When you first go to `npm publish` a module, your registry credentials may not be in your `.npmrc`.  As such, this script _assumes_ you need to login initially and prompts you to supply user name, password, and an email address.  If you know your credentials are already valid and don't want to type them in, use `--nocred` and the script will skip the authentication stage.  If you are wrong and have not previously authenticated, the publish step of the script will fail and you'll have to try again.
 
@@ -73,9 +74,16 @@ toa-ui-importer --nocred package.json
 All of these switches and flags are optional, but may be useful in either debugging a problem or fine tuning your use of this script for maximum efficiency.
  * `-h|--help` :: print the _help_ or _usage_ message and exit.
  * `-d|--debug` :: collects all the output from debug level messages and bash / terminal commands and presents them as terminal output.  By default, the script redirects all this output to `/dev/null`.
+ * `-c|--cwd` :: much like the `--debug` switch, this switch controls the output from directory-based shell commands like `popd`, `pushd`, `pwd`, etc.  Using this flag will cause all output from those commands to be echoed to `stdout`.  This flag is largely just for development debug and is not needed for any normal operation.
+ * `--dev` :: A switch that allows you to also download, scan and publish all development dependency packages like you would with `npm install`.  By default, this script acts like `npm install --only=production -g`.  This switch effectively causes a `npm install --development` to be done in the main package; pulling in all its development dependencies and, consequently, their dependencies.  On the `toa-ui-importer` script, this switch is largely a pass through to the `npm-imporer` script.
  * `--nocred` :: stands for 'no credentials'.  When you first go to `npm publish` a module, your registry credentials may not be in your `.npmrc`.  As such, this script _assumes_ you need to login initially and prompts you to supply user name, password, and an email address.  If you know your credentials are already valid and don't want to type them in, use `--nocred` and the script will skip the authentication stage.  If you are wrong and have not previously authenticated, the publish step of the script will fail and you'll have to try again.  **Note**: if you are trying to import a lot of dependencies, like the TOA UI has, you will absolutely want to use this switch or you will be prompted to authenticate with the local registry for **each** dependency; very annoying!  To authenticate once, just type `config-npmrc 'safe' && npm adduser`.  It will prompt you for your credentials.  Then use this `--nocred` switch which will, in turn, be passed to the `npm-importer` script.
 
 ## Troubleshooting
+Don't forget about the `--debug` flag on both the `npm-importer` and
+`toa-ui-importer` scripts.  The flag will show you the output that tne various
+`npm` commands are producing as well as track all the directory traversal that
+the script is doing; which is very important to the way NPM works.
+
 #### 'No compatible version found : \<package\>@\<version\>' when trying to install from local registry.
 There are two possible reasons you are seeing this error message.
 1. If you haven't used `npm-importer` to import the package then, no surprise, its not there and you should use `npm-importer` to import it (That's why I spent all the time writing and documenting it).
@@ -86,6 +94,17 @@ For case #1 above, just type `npm-importer <package>@<version>` and then try ins
 For case #2 above, the remedy is acutally the same.  Just type `npm-importer <package>@<version>` and then try importing the `toa-ui` (or whatever package) again.  (I just wanted you to understand **why** you were getting the error)  To date, I think there are about half a dozen packages that the `toa-ui` requires that end up triggering this error.  Since they've been imported (as of 03/19/2020) to our local registry, you should see it happen again until dependency versions or packages are updated for the TOA web UI.
 
 
+#### 'NotFound : \<package\>@\<version\>'
+This error most often occurs with "optional" dependencies.  For whatever
+reason, intalling a package with its development dependencies doesn't pick up
+one of its dependencies.  This happens, for instance with `chokidar@^1.7.0`.
+It always fails to pick up `fsevents@^1.0.0` (in this case its becasue
+`fsevents` is intended for another os/arch).  If you determine you need this
+package, just try running:
+``` bash
+# example from grunt-eslint@17.3.1 install
+npm-importer --nocred --rebuild-quarantine true --debug esprima@~1.0.2
+```
+
 ## Future Improvements
- * Add _development dependencies_ to npm-importer
  * ~~Add documentation~~ Better than most so I'm calling this 'Done'!
