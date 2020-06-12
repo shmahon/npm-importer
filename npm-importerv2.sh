@@ -56,6 +56,11 @@ function usage() {
    grey  "       allow stdout to go to the terminal instead of        "
    grey  "       /dev/null                                            "
    grey  "                                                            "
+   grey  "  -t | --testing                                            "
+   grey  "       don't try to virus scan or upload the modules.  This "
+   grey  "       flag is used for testing the script to isolate       "
+   grey  "       errors.                                              "
+   grey  "                                                            "
    grey  "  -c | --cwd                                                "
    grey  "       allow all 'popd', 'pushd' and other dir commands     "
    grey  "       to print to stdout instead of default /dev/null      "
@@ -93,7 +98,7 @@ function parse_args() {
    name="${0##*/}"
 
    # use getopt to do most of the work
-   TEMP=`getopt -o hdc --long debug,cwd,dev,nocred,rebuild-quarantine:,align: -n $name -- "$@"`
+   TEMP=`getopt -o hdtc --long debug,testing,cwd,dev,nocred,rebuild-quarantine:,align: -n $name -- "$@"`
    # catch any errors from getopt
    if [ $? -ne 0 ]; then
       usage
@@ -107,6 +112,9 @@ function parse_args() {
 
          # process an option without a required argument
          -d | --debug ) output=/dev/stdout ; shift ;;
+
+         # process an option without a required argument
+         -t | --testing ) testFlag='true' ; shift ;;
 
          # process an option without a required argument
          -c | --cwd ) cwdoutput=/dev/stdout ; shift ;;
@@ -147,8 +155,10 @@ function parse_args() {
       red $(indent $align)"no npm package specified for import!"
       usage
    else
+      echo "first parameter :: $1"
       #NPMPACKAGE=$(echo $1 | sed -rn 's/(.*)@[\^>~]?([0-9]\.?){1,3}/\1/p') # ${1%%@[\^>~]*[0-9]*}
-      NPMPACKAGE=$(echo $1 | sed -rn 's/(.*)@[\^>~]?[0-9]+.*$/\1/p') # ${1%%@[\^>~]*[0-9]*}
+      #NPMPACKAGE=$(echo $1 | sed -rn 's/(.*)@[\^>~]?[0-9]+.*$/\1/p') # ${1%%@[\^>~]*[0-9]*}
+      NPMPACKAGE=$(echo $1 | sed -rn 's/(^\@?[^\@]*).*$/\1/p') # ${1%%@[\^>~]*[0-9]*}
       NPMVERSION=${1##*@}
       if [[ $NPMVERSION == $NPMPACKAGE ]]; then
          NPMVERSION=""
@@ -169,11 +179,9 @@ function parse_args() {
 #-----------------------------------
 function check_version() {
 
-   # $1 : the package name (with version if you require it)
-   # $2 : type of dependency.  must be 'global' or 'local'
-   #      defaults to 'local'
-
-   local package=$1
+   # some version strings have spaces; strip of the quotes that allow
+   # a space delimited version string to be passed in as a single parameter
+   local package=${1//\"/}  
    local scope=${2:-'local'}
    local res="NotFound"
 
@@ -189,32 +197,34 @@ function check_version() {
       #        Otherwise, the '--depth=0' will prevent you from finding an
       #        answer.
       local )
-         res=$(npm ls $package --depth=0 --json | jq ".dependencies.\"${package}\".version") 2> ${output};
-
+         res=$(npm ls -s $package --depth=0 --json | \
+            jq ".dependencies.\"${package%%@*}\".version") 2> ${output};
+         #npm ls -ls mkdirp --json | jq '.dependencies | .[] | select( .dependencies.$package[0][0].rawSpec=="^0.5.0" ) | .'
          if [ -z $res ] || [[ $res == "null" ]]; then
             # retry at global scope
-            red "$(indent $align)check-version($package, 'local') => $res." > $stderr
-            red "$(indent $align)Retrying at 'global' scope ($rootdir)" > $stderr
-            res=$(check_version $package 'global');
+            res=$(check_version "$package" 'global');
          fi;;
 
       global )
-         pushd $PWD &> ${cwdoutput};
+         pushd $PWD &> /dev/null;
          cd $rootdir;
-         res=$(npm ls $package --json | \
-            jq -r ".. | .dependencies? | objects | to_entries[] | select( .key == \"$package\") | .value.version") 2> ${output}; 
-         popd &> ${cwdoutput} ;;
+         res=$(npm ls -s $package --json | \
+            jq -r "[.. | .dependencies? | objects | to_entries[] | select( .key == \"${package%%@*}\")] | .[0].value.version") 2> ${output}; 
+         popd &> /dev/null ;;
 
       * )
          # just default to 'local' scope
          magenta "$(indent $align)check_version( $scope ) : invalid 'scope'" \
                  " provided; defaulting to 'global'."; > $stderr 
-         res=$(check_version $package 'global') ;;
+         res=$(check_version "$package" 'global') ;;
    esac;
 
    if [ -z $res ] || [[ $res == "null" ]]; then
       res=NotFound
    fi
+
+   # debug                                                                                                         
+   #grey "$(indent $align)${FUNCNAME[0]} :: result = $res" > $stderr
 
    ((align-=3))
 
@@ -222,57 +232,34 @@ function check_version() {
    echo ${res//\"/} ; return 0;
 }
 
+
+
+
 #-----------------------------------
 #
 #
 #-----------------------------------
-function check_dep() {
+function check_path() {
 
-   # $1 : the package name (with version if you require it)
-   # $2 : type of dependency.  must be 'global' or 'local'
-   #      defaults to 'local'
+   local mod=$1
+   local ver=$2
+   local res="NotFound"
 
-   local pkgver=$1
-   local package=${pkgver%%@[\^0-9]*}
-   local version=${pkgver##*@}
-   local scope=${2:-'local'}
-   local res=1
-
-   # version can be empty
-   if [[ $version == $package ]]; then
-      version=""
+   # is it installed in the dependency's path? 
+   if [ -d $PWD/node_modules/$mod ]; then
+      res="$PWD/node_modules/$mod"
+   elif [ -d $rootdir/node_modules/$mod ]; then
+      res="$rootdir/node_modules/$mod"
+      # TODO: should really check the version to make sure it matches
+   else
+      # TODO: it actually could be installed as a dependency of another module
+      res="NotFound"
    fi
 
-   ((align+=3))
-   grey "$(indent $align)check_dep :: running in $PWD :: checking $pkgver" &> ${output}
-   grey ".dependencies.\"$package\".version :: $(npm ls $pkgver --depth=0 --json | jq '.dependencies."$package".version')"
-   grey "\"$package\".version               :: $(npm ls $pkgver --depth=0 --json | jq '."$package".version')"
-   case "$scope" in
-
-      local )
-         if [[ $(npm ls $pkgver --depth=0 --json | \
-               jq '.dependencies."$package".version') == $version ]]; then
-            res=0;
-         fi ;;
-      global )
-         #grey "$(indent $align)check_dep( 'global' ) :: $1";
-         if [[ $(npm ls $pkgver -g --depth=0 --json | \
-               jq '.dependencies."$package".version') == $version ]]; then
-            res=0;
-         fi ;;
-      * )
-         # just default to 'local' scope
-         magenta "$(indent $align)check_dep( $scope ) : invalid 'scope' provided; defaulting to 'local'.";
-         if [[ $(npm ls $pkgver --depth=0 --json | \
-               jq '.dependencies."$package".version') == $version ]]; then
-            res=0;
-         fi ;;
-   esac
-   ((align-=3))
-
    # just return the result
-   return $res
+   echo ${res}; return 0;
 }
+
 
 
 
@@ -284,6 +271,7 @@ function read_dev_dependencies() {
 
    local package=$1
    local version=$2
+   local modpath=NotFound
 
    # set location for dependency file
    local pkgjsonfile=$PWD/package.json
@@ -295,7 +283,7 @@ function read_dev_dependencies() {
 
 
    # debug information
-   magenta "$(indent $align)$package${version:+@$version} :: dev_dependencies" &> ${output}
+   green "$(indent $align)$package${version:+@$version} :: dev_dependencies" &> ${output}
    grey "$(indent $align) in $PWD." &> ${output}
 
    # add dependencies to our installation list ("report")
@@ -329,16 +317,20 @@ function read_dev_dependencies() {
          modules[${key}${value:+,$value}]="dependency,installed"
       fi
 
+      # find where this module was installed
+      modpath=$(check_path $key "$value")
+
       # add the desired install path for this package.
-      modpaths[${key}${value:+,$value}]=$PWD/node_modules/$key
+      # original : modpaths[${key}${value:+,$value}]=$PWD/node_modules/$key
+      modpaths[${key}${value:+,$value}]=$modpath
 
       # debug reporting
-      grey -n "$(indent $((align+2)))"
+      grey -n "$(indent $((align+2)))" &> ${output}
       grey "added modpaths[${key}${value:+,$value}] " \
            ":: ${modpaths[${key}${value:+,$value}]}" &> ${output}
 
-      cyan -n "$(indent $((align+2)))"
-      cyan "checking ${modpaths[${key}${value:+,$value}]} for dev deps..." &> ${output}
+      cyan -n "$(indent $((align+2)))" &> ${output}
+      cyan "checking $key@$value for dev deps..." &> ${output}
 
       # get any dependencies added by this development dependency
       read_dependencies $key $value
@@ -360,11 +352,18 @@ function read_dependencies() {
    local package=$1
    local version=$2
    local pkgpath=${modpaths[${package}${version:+,$version}]}
+   local hasdeps=0
+   local modpath=NotFound
+   local npmobjpath_history=$npmobjpath
+
+   # initialize 'map' path
+   npmobjpath="${npmobjpath}.dependencies.\"$package\""
+   blue -n "npmobjpath => " #&> ${output};
+   green "$npmobjpath" #&> ${output}
 
    # debug
    ((align+=3))
-   grey  "$(indent $align)${FUNCNAME[0]} :: changing from $PWD ->" \
-         "$pkgpath." &> ${output}
+   grey "changing from $PWD -> $pkgpath." &> ${cwdoutput}
 
    # enter this packages directory
    pushd $PWD &> ${cwdoutput}
@@ -374,47 +373,93 @@ function read_dependencies() {
    local pkgjsonfile=$PWD/package.json
 
    # debug information
-   magenta "$(indent $align)${FUNCNAME[0]} :: finding " \
-           "$package${version:+@$version} dependencies." &> ${output}
+   grey "$(indent $align)path => $PWD" &> ${output}
+   ((align+=1))
+
+
+   #-------------------------------------
+   #  map.json method for this routine
+   #-------------------------------------
+
+   # use $rootdir/map.json to find dependency information
+   hasdeps=$(cat $rootdir/map.json | jq '$npmobjpath.dependencies | length')
+   grey "$(indent $align)hasdeps => $hasdeps"
+
+   # get a list of dependencies
+   local deps=$( cat $rootdir/map.json | jq '$npmobjpath.dependencies | keys')
+   grey "$(indent $align)deps => $deps"
+
+   # simple loop
+   OIFS=$IFS
+   IFS=$','
+   for dep in $deps; do
+      echo "dep => $dep"
+   done
+   IFS=${OFS}
 
    # add dependencies to our installation list ("report")
    local key=""
    local value=""
    while IFS== read -r key value;
    do
-
       # check for empty deps
       if [ -z $key ]; then
          echo "key => x${key}x"
          break
       fi
 
-      # debug
-      blue "$(indent $align)${FUNCNAME[0]} :: $package${version:+@$version}" \
-           " requires $key@$value. " &> ${output}
-
-      # version fixup
-      if [ -z ${value//[\^\~\ \*]/} ]; then
-
-         local prever=$value
-
-         # there was no version specified; grab one from installed package
-         value=$(check_version $key 'local')
-
-         if [[ $res == "NotFound" ]]; then
-            # skip this one and mark as unsatisfed
-            modules[${key},$prever]="NotFound"
-            modpaths[${key},$prever]="NotFound"
-            yellow -n "$(indent $align)$key@$prever :: "; red "NotFound"
-            continue
-         fi
-      fi
+      # reporting flag
+      hasdeps=1
 
       # strip all spaces from version
       value=${value//\ /}
 
+      # always check to see what version we actually got
+      local prever=$value
+      grey "using prever => $prever" &> ${output}
+      if [ -z $prever ]; then 
+         prever='none'; 
+         value=$(check_version "$key" 'global')
+      else
+         value=$(check_version "$key@$value" 'global')
+      fi;
+      grey "check_version :: returned value => $value" &> ${output}
+
+
+      if [[ $value != "NotFound" ]]; then
+
+         # debug
+         grey -n "$(indent $align)requested: "
+         yellow -n "$prever"
+
+         # just report on what version was actually installed 
+         if [[ ${prever//[\^\~\ \*]/} == $value ]]; then
+            grey -n ", got: "; green "$value"
+         else
+            grey -n ", got: "; red "$value"
+         fi
+
+         echo "";
+      else
+         # mark as unsatisfed
+         modules[${key},$prever]="NotFound"
+         modpaths[${key},$prever]="NotFound"
+         value=$(jq -r ".optionalDependencies.\"$key\"" $pkgjsonfile) 2> ${output};
+         if [ ! -z $value ] && [[ $value != "null" ]]; then
+            yellow "$(indent $((align+2)))$key was not installed (optional dependency)."
+            modules[${key}${value:+,$value}]="NotInstalled;Optional"
+         else
+            yellow -n "$(indent $align)$key@$prever :: "; red "NotFound"
+         fi
+
+         # skip this one
+         continue
+      fi
+
       # debug
-      blue -n "$(indent $align)+ "; white -n "adding $key@$value";
+      blue -n "$(indent $align)$package${version:+@$version} "
+      grey -n "dep: "
+      green -n "$key"; grey -n "@"; yellow -n "$value"
 
       # only add this dependency if not already in our list
       if [[ ! -z "${modules[${key}${value:+,$value}]:-}" ]]; then
@@ -429,34 +474,54 @@ function read_dependencies() {
          modules[${key}${value:+,$value}]="installed"
       fi
 
-      # add this module's path
-      if [ -d $PWD/node_modules/$key ]; then
-         modpaths[${key}${value:+,$value}]=$PWD/node_modules/$key
-      elif [ -d $rootdir/node_modules/$key ]; then
-         modpaths[${key}${value:+,$value}]=$rootdir/node_modules/$key
-      else
-         modules[${key}${value:+,$value}]="NotFound"
-         modpaths[${key}${value:+,$value}]="NotFound"
-         red "$(indent $((align+2)))$key was not installed"
+      # find where this module was installed
+      modpath=$(check_path $key $value)
+
+      # record the path for this dependency
+      modpaths[${key}${value:+,$value}]=$modpath
+
+      # distinguish 'optional' dependencies from errors
+      if [[ $modpath == "NotFound" ]]; then
+         value=$(jq -r ".optionalDependencies.\"$key\"" $pkgjsonfile) 2> ${output};
+         if [ ! -z $value ] && [[ $value != "null" ]]; then
+            yellow "$(indent $((align+2)))$key was not installed (optional dependency)."
+            modules[${key}${value:+,$value}]="NotInstalled;Optional"
+         # error : just didn't install a dependency for some reason
+         else
+            red "$(indent $((align+2)))$key was not installed"
+            modules[${key}${value:+,$value}]="NotFound"
+         fi
+         # just move on to the next dependency
          continue
       fi
-
+      
       # debug reporting
-      grey -n "$(indent $((align+2)))"
-      grey "added modpaths[${key}${value:+,$value}] :: ${modpaths[${key}${value:+,$value}]}" &> ${output}
+      grey -n "$(indent $((align+2)))" &> ${output}
+      grey -n "added modpaths[${key}${value:+,$value}] :: " &> ${output}
+      grey "${modpaths[${key}${value:+,$value}]}" &> ${output}
 
-      cyan -n "$(indent $((align+2)))"
-      cyan "checking ${modpaths[${key}${value:+,$value}]} for deps..." &> ${output}
+      cyan -n "$(indent $((align+2)))" &> ${output}
+      cyan "checking $key@$value for deps..." &> ${output}
 
       # recursively add this dependencies, dependencies
       read_dependencies $key "$value"
 
    done < <(jq -r '.dependencies | to_entries | .[] | .key + "=" + .value ' $pkgjsonfile);
 
-   ((align-=3))
+   # reporting
+   if [ $hasdeps -lt 1 ]; then 
+      white "$(indent $align) no deps."
+   fi
+
+   ((align-=4))
 
    # return to starting point
    popd &> ${cwdoutput}
+
+   # reset to original npmobjpath
+   npmobjpath=$npmobjpath_history
+   blue -n "npmobjpath => " #&> ${output};
+   green "$npmobjpath" #&> ${output}
 }
 
 
@@ -470,9 +535,8 @@ function install_package() {
    # $2 : the package name (directory name of package)
    # $3 : the package *version* (can be empty)
 
-   local nodedir=$1
-   local package=$2
-   local version=$3
+   local package=$1
+   local version=$2
    local ret=0
 
    # install the module without caching it in npm-proxy
@@ -485,22 +549,26 @@ function install_package() {
 
    # mark this module as installed
    modules[${package}${version:+,$version}]="installed"
-   modpaths[${package}${version:+,$version}]=$nodedir
+   modpaths[${package}${version:+,$version}]=$rootdir
 
    # record where we started
    pushd $PWD &> ${cwdoutput}
 
    # move to the top-level package directory
-   cd $nodedir
+   cd $rootdir
 
    #--------------------------------
    # all dependency 'reading' and
    # installing expects to be in
-   # in the $nodedir
+   # in the $rootdir
    #--------------------------------
 
    # debug announcement
    grey "install_package :: $PWD" &> ${output}
+
+   # generate a map of all the installed dependencies
+   npm ls -l --global > "map.json"
+
 
    # get a recursive list of all dependencies for this package
    read_dependencies $package $version
@@ -509,15 +577,15 @@ function install_package() {
    if [[ $devFlag == "true" ]]; then
 
       # requires that we already be in $quarantine/lib/node_modules/$package
+      grey "install_package :: installing $package development dependencies."
       npm install --development &> ${output}
 
-      read_dev_dependencies $nodedir $package $version
+      # original: read_dev_dependencies $nodedir $package $version
+      read_dev_dependencies $package $version
       if [ $? -ne 0 ]; then
          red "install_package :: read_dev_dependencies :: failed for $package"
          exit 1
       fi
-
-      # TODO: need to add the "dependencies of our devDependencies" now.
    fi
 
    # return to original location
@@ -604,29 +672,50 @@ function report() {
    # $1 - the module that is being installed
    # $2 - flag for printing the paths
    local flag=${2:-'false'}
-   local key;
-   declare -A notfounds
+   local offset
+   local key
+   local -A founds
+   local -A notfounds
+   local -A optionals
+
+   # sort the list of modules
+   for key in ${!modules[@]}
+   do
+      # alignment formatting
+      offset=${offset:-$(( 40+${#modules[${key}]}+5 ))}
+      offset=$(( ${#modules[${key}]} > $((offset-40-5)) ?  $((40+${#modules[${key}]}+5)) : offset ))
+
+      # sort into categories
+      case "${modules[${key}]%%;*}" in
+              NotFound ) notfounds[$key]=${modules[${key}]}; ;;
+          NotInstalled ) optionals[$key]=${modules[${key}]}; ;;
+                     * ) founds[$key]=${modules[${key}]}; ;;
+      esac
+   done
 
    # just create a module report
    echo -en "\n"
    magenta "$(indent $align)Module and Dependency Report: $1"
    white -n "$(indent $align)"
    white "-------------------------------------------------------------------------------------------------"
-   for key in ${!modules[@]}
+
+   # print all the modules that were found
+   for key in ${!founds[@]}
    do
-
-      # just save an error list for last
-      if [[ ${modules[${key}]} == "NotFound" ]]; then
-         notfounds[${key}]="NotFound"
-         continue
-      fi
-
-      # alignment formatting
-      offset=${offset:-$(( 40+${#modules[${key}]}+5 ))}
-      offset=$(( ${#modules[${key}]} > $((offset-40-5)) ?  $((40+${#modules[${key}]}+5)) : offset ))
-
       # build a report of all modules with the path being optional
       blue -n "$(indent $align)$key $(indent 40)-> ${modules[${key}]} $(indent $offset)"
+      case "$flag" in
+          true ) grey " :: ${modpaths[${key}]}"; ;;
+         false ) grey ""; ;; # just add the carriage return
+             * ) grey ""; ;; # assume 'false'
+      esac
+   done
+
+   # now print out the 'optional' report
+   for key in ${!optionals[@]}
+   do
+      # build a report of all modules with the path being optional
+      yellow -n "$(indent $align)$key $(indent 40)-> ${optionals[${key}]} $(indent $offset)"
       case "$flag" in
           true ) grey " :: ${modpaths[${key}]}"; ;;
          false ) grey ""; ;; # just add the carriage return
@@ -637,10 +726,6 @@ function report() {
    # now print out the error report
    for key in ${!notfounds[@]}
    do
-      # alignment formatting
-      offset=${offset:-$(( 40+${#notfounds[${key}]}+5 ))}
-      offset=$(( ${#notfounds[${key}]} > $((offset-40-5)) ? $((40+${#notfounds[${key}]}+5)) : offset ))
-
       # build a report of all modules with the path being optional
       red -n "$(indent $align)$key $(indent 40)-> ${notfounds[${key}]} $(indent $offset)"
       case "$flag" in
@@ -660,16 +745,16 @@ function report() {
 
 NPMPACKAGE=""
 NPMVERSION=""
+npmobjpath=""
 cwdoutput=/dev/null
 output=/dev/null
 stderr=/dev/stderr
+testFlag="false"
 devFlag="false"
 nocredFlag='false'
 rebuildFlag=""
 align=0
 quarantine="/data/npm-quarantine"
-rootdir="${quarantine}/lib/node_modules"
-
 
 declare -A modules   # an array with modules[<package name>,<package version>] = <status>
 declare -A modpaths  # an array with modpaths[<package name>,<package version] = <path>
@@ -723,6 +808,7 @@ fi
 #--------------------------------------
 mkdir -p $quarantine                # setup sandbox to work in
 npm config set prefix $quarantine
+npm config set cache  $quarantine/.npm
 export PATH=$quarantine/bin:$PATH
 
 
@@ -733,11 +819,23 @@ export PATH=$quarantine/bin:$PATH
 config_npmrc 'open' # Caution : npm set to access the internet registry
 
 # update the root package dir
-rootdir="$rootdir/$NPMPACKAGE"
+rootdir="${quarantine}/lib/node_modules/$NPMPACKAGE"
+
+#
+#  Assumptions:
+#
+#    any 'npm ls -l --global <package>' will produce a file with
+#    the topmost package listed as a primary dependency.  Each
+#    additional dependency will be listed underneath it as an 
+#    additional dependency and so on in a simple heirarchical 
+#    fashion.
+# 
+#    So, the first one will be '.dependencies.karma', for instance.
+#    The second one will be `
 
 # download the package with dependencies.
 echo -en "\n"
-install_package ${rootdir} ${NPMPACKAGE} ${NPMVERSION}
+install_package ${NPMPACKAGE} ${NPMVERSION}
 if [ $? -ne  0 ]; then
    echo "  Try rerunning with the '--debug' flag."
    exit 1
@@ -748,6 +846,11 @@ fi
 report ${NPMPACKAGE}@${NPMVERSION} 'true' #&> ${output}
 white -n "\n$(indent $align)installation of ${NPMPACKAGE}@${NPMVERSION}"; success;
 
+# early abort for testing
+if [[ $testFlag == "true" ]]; then
+   yellow "Early abort for testing..."
+   exit 0
+fi
 
 # this requires your Crowd credentials
 if [ $nocredFlag == "false" ]; then
@@ -767,8 +870,8 @@ config_npmrc 'safe'
 for key in ${!modules[@]}
 do
    # skip modules that failed
-   if [[ ${modules[${key}]} == "NotFound" ]]; then
-      red "$key - NotFound!"
+   if [[ ${modules[${key}]} == "NotFound" ]] || \
+      [[ ${modules[${key}]%%;*]} == "NotInstalled" ]]; then
       continue
    fi
 
@@ -813,7 +916,7 @@ do
 
    # scan the downloaded software
    blue -n "$(indent $align)virus scanning :: ${module}@${actualver}."
-   LOGFILE="$module-$(date +%T-%m%d%Y).clam"
+   LOGFILE="${module/\/-}-$(date +%T-%m%d%Y).clam"
    clamscan -ri "$moduledir" > "./$LOGFILE"
 
    # get the value of "Infected lines"
@@ -840,4 +943,4 @@ do
 done
 
 # summary report
-report
+report ${NPMPACKAGE}@${NPMVERSION}

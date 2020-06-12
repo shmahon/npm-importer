@@ -175,8 +175,10 @@ if [ ! -z $prefix ]; then
 	if [[ "$prefix" == "reset" ]]; then
 		red -n "$(indent 5)deleting your current prefix : "; white "$(npm config get prefix)"
 		npm config delete prefix
+		npm config delete cache
 	else
 		# will create the directory if it doesn't exist
+		npm config set cache $prefix/.npm
 		npm config set prefix $prefix
 		white "$(indent 5)setting prefix => $prefix"
 	fi
