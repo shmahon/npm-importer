@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash 
 # vim: set ts=3 sw=3 et autoindent smartindent:
 
 # These notes consider how to download a "release" of TOA
@@ -358,8 +358,8 @@ function read_dependencies() {
 
    # initialize 'map' path
    npmobjpath="${npmobjpath}.dependencies.\"$package\""
-   blue -n "npmobjpath => " #&> ${output};
-   green "$npmobjpath" #&> ${output}
+   grey -n "$(indent $align)npmobjpath => " &> ${output}
+   green "$npmobjpath" &> ${output} 
 
    # debug
    ((align+=3))
@@ -382,146 +382,204 @@ function read_dependencies() {
    #-------------------------------------
 
    # use $rootdir/map.json to find dependency information
-   hasdeps=$(cat $rootdir/map.json | jq '$npmobjpath.dependencies | length')
-   grey "$(indent $align)hasdeps => $hasdeps"
+   hasdeps=$(cat $mapfile | jq "$npmobjpath.dependencies | length")
+   grey "$(indent $align)hasdeps => $hasdeps" &> ${output}
 
    # get a list of dependencies
-   local deps=$( cat $rootdir/map.json | jq '$npmobjpath.dependencies | keys')
-   grey "$(indent $align)deps => $deps"
+   local deps=$( cat $mapfile | jq "$npmobjpath.dependencies | keys | .[]")
+
+   # because we are completely tracking scope, we don't *need* to get
+   # the version anymore, but we also *aren't* getting the version with
+   # this method.  Some more exotic method would be needed in the 'deps'
+   # determination above.
 
    # simple loop
-   OIFS=$IFS
-   IFS=$','
    for dep in $deps; do
-      echo "dep => $dep"
-   done
-   IFS=${OFS}
 
-   # add dependencies to our installation list ("report")
-   local key=""
-   local value=""
-   while IFS== read -r key value;
-   do
-      # check for empty deps
-      if [ -z $key ]; then
-         echo "key => x${key}x"
-         break
-      fi
+      # bail on empty list
+      if [ -z $dep ]; then continue; fi;
 
-      # reporting flag
-      hasdeps=1
+      # for each dependenc:
+      #    - verify that its installed
+      #    - get version
+      #    - get path
+      #    - iterate over dependencies
 
-      # strip all spaces from version
-      value=${value//\ /}
-
-      # always check to see what version we actually got
-      local prever=$value
-      grey "using prever => $prever" &> ${output}
-      if [ -z $prever ]; then 
-         prever='none'; 
-         value=$(check_version "$key" 'global')
-      else
-         value=$(check_version "$key@$value" 'global')
-      fi;
-      grey "check_version :: returned value => $value" &> ${output}
-
-
-      if [[ $value != "NotFound" ]]; then
-
-         # debug
-         grey -n "$(indent $align)requested: "
-         yellow -n "$prever"
-
-         # just report on what version was actually installed 
-         if [[ ${prever//[\^\~\ \*]/} == $value ]]; then
-            grey -n ", got: "; green "$value"
-         else
-            grey -n ", got: "; red "$value"
-         fi
-
-         echo "";
-      else
-         # mark as unsatisfed
-         modules[${key},$prever]="NotFound"
-         modpaths[${key},$prever]="NotFound"
-         value=$(jq -r ".optionalDependencies.\"$key\"" $pkgjsonfile) 2> ${output};
-         if [ ! -z $value ] && [[ $value != "null" ]]; then
-            yellow "$(indent $((align+2)))$key was not installed (optional dependency)."
-            modules[${key}${value:+,$value}]="NotInstalled;Optional"
-         else
-            yellow -n "$(indent $align)$key@$prever :: "; red "NotFound"
-         fi
-
-         # skip this one
-         continue
-      fi
+      # build this dependencies object path
+      depobjpath="$npmobjpath.dependencies.$dep"
 
       # debug
-      blue -n "$(indent $align)$package${version:+@$version} "
-      grey -n "dep: "
-      green -n "$key"; grey -n "@"; yellow -n "$value"
+      blue -n "$(indent $align)+ adding "; white -n "${dep//\"/}"
 
-      # only add this dependency if not already in our list
-      if [[ ! -z "${modules[${key}${value:+,$value}]:-}" ]]; then
+      # make sure its an actual dependency
+      valid=$(cat $mapfile | jq -r "$depobjpath._args[0][0] | length")
+      if [ -z $valid ] || [ $valid -eq 0 ]; then
          red " x"
-
-         # no need to check for child dependencies
          continue
+      fi
+
+      # get requested version
+      map_version_req=$(cat $mapfile | jq -r "$depobjpath._args[0][0].rawSpec")
+
+      # debug
+      white -n "@"; yellow -n "$map_version_req";
+
+      # get actual version
+      map_version_actual=$(cat $mapfile | jq -r "$depobjpath.version")
+
+      # just report on what version was actually installed 
+      if [[ ${map_version_req//[\^\~\ \*]/} == $map_version_actual ]]; then
+         grey -n " ["; green -n "$map_version_actual"; grey -n "]"
       else
-         green " *"
-
-         # now mark it as installed
-         modules[${key}${value:+,$value}]="installed"
+         grey -n " ["; red -n "$map_version_actual"; grey -n "]"
       fi
 
-      # find where this module was installed
-      modpath=$(check_path $key $value)
+      # general indication that this dependency was added.
+      green " *"
 
-      # record the path for this dependency
-      modpaths[${key}${value:+,$value}]=$modpath
+      # get path
+      map_path=$(cat $mapfile | jq -r "$depobjpath.path")
+      grey "$(indent $align)map_path : $map_path" &> ${output}
 
-      # distinguish 'optional' dependencies from errors
-      if [[ $modpath == "NotFound" ]]; then
-         value=$(jq -r ".optionalDependencies.\"$key\"" $pkgjsonfile) 2> ${output};
-         if [ ! -z $value ] && [[ $value != "null" ]]; then
-            yellow "$(indent $((align+2)))$key was not installed (optional dependency)."
-            modules[${key}${value:+,$value}]="NotInstalled;Optional"
-         # error : just didn't install a dependency for some reason
-         else
-            red "$(indent $((align+2)))$key was not installed"
-            modules[${key}${value:+,$value}]="NotFound"
+      # create record
+               #modules[${key}${value:+,$value}]="NotInstalled;Optional"
+      modules[${dep//\"/}${map_version_actual:+,$map_version_actual}]="installed"
+      modpaths[${dep//\"/}${map_version_actual:+,$map_version_actual}]=${map_path}
+
+      read_dependencies ${dep//\"/} ${map_version_actual}
+   done
+
+
+
+   if ((0)); then
+      # add dependencies to our installation list ("report")
+      local key=""
+      local value=""
+      while IFS== read -r key value;
+      do
+         # check for empty deps
+         if [ -z $key ]; then
+            echo "key => x${key}x"
+            break
          fi
-         # just move on to the next dependency
-         continue
-      fi
-      
-      # debug reporting
-      grey -n "$(indent $((align+2)))" &> ${output}
-      grey -n "added modpaths[${key}${value:+,$value}] :: " &> ${output}
-      grey "${modpaths[${key}${value:+,$value}]}" &> ${output}
 
-      cyan -n "$(indent $((align+2)))" &> ${output}
-      cyan "checking $key@$value for deps..." &> ${output}
+         # reporting flag
+         hasdeps=1
 
-      # recursively add this dependencies, dependencies
-      read_dependencies $key "$value"
+         # strip all spaces from version
+         value=${value//\ /}
 
-   done < <(jq -r '.dependencies | to_entries | .[] | .key + "=" + .value ' $pkgjsonfile);
+         # always check to see what version we actually got
+         local prever=$value
+         grey "using prever => $prever" &> ${output}
+         if [ -z $prever ]; then 
+            prever='none'; 
+            value=$(check_version "$key" 'global')
+         else
+            value=$(check_version "$key@$value" 'global')
+         fi;
+         grey "check_version :: returned value => $value" &> ${output}
+
+
+         if [[ $value != "NotFound" ]]; then
+
+            # debug
+            grey -n "$(indent $align)requested: "
+            yellow -n "$prever"
+
+            # just report on what version was actually installed 
+            if [[ ${prever//[\^\~\ \*]/} == $value ]]; then
+               grey -n ", got: "; green "$value"
+            else
+               grey -n ", got: "; red "$value"
+            fi
+
+            echo "";
+         else
+            # mark as unsatisfed
+            modules[${key},$prever]="NotFound"
+            modpaths[${key},$prever]="NotFound"
+            value=$(jq -r ".optionalDependencies.\"$key\"" $pkgjsonfile) 2> ${output};
+            if [ ! -z $value ] && [[ $value != "null" ]]; then
+               yellow "$(indent $((align+2)))$key was not installed (optional dependency)."
+               modules[${key}${value:+,$value}]="NotInstalled;Optional"
+            else
+               yellow -n "$(indent $align)$key@$prever :: "; red "NotFound"
+            fi
+
+            # skip this one
+            continue
+         fi
+
+         # debug
+         blue -n "$(indent $align)$package${version:+@$version} "
+         grey -n "dep: "
+         green -n "$key"; grey -n "@"; yellow -n "$value"
+
+         # only add this dependency if not already in our list
+         if [[ ! -z "${modules[${key}${value:+,$value}]:-}" ]]; then
+            red " x"
+
+            # no need to check for child dependencies
+            continue
+         else
+            green " *"
+
+            # now mark it as installed
+            modules[${key}${value:+,$value}]="installed"
+         fi
+
+         # find where this module was installed
+         modpath=$(check_path $key $value)
+
+         # record the path for this dependency
+         modpaths[${key}${value:+,$value}]=$modpath
+
+         # distinguish 'optional' dependencies from errors
+         if [[ $modpath == "NotFound" ]]; then
+            value=$(jq -r ".optionalDependencies.\"$key\"" $pkgjsonfile) 2> ${output};
+            if [ ! -z $value ] && [[ $value != "null" ]]; then
+               yellow "$(indent $((align+2)))$key was not installed (optional dependency)."
+               modules[${key}${value:+,$value}]="NotInstalled;Optional"
+            # error : just didn't install a dependency for some reason
+            else
+               red "$(indent $((align+2)))$key was not installed"
+               modules[${key}${value:+,$value}]="NotFound"
+            fi
+            # just move on to the next dependency
+            continue
+         fi
+         
+         # debug reporting
+         grey -n "$(indent $((align+2)))" &> ${output}
+         grey -n "added modpaths[${key}${value:+,$value}] :: " &> ${output}
+         grey "${modpaths[${key}${value:+,$value}]}" &> ${output}
+
+         cyan -n "$(indent $((align+2)))" &> ${output}
+         cyan "checking $key@$value for deps..." &> ${output}
+
+         # recursively add this dependencies, dependencies
+         read_dependencies $key "$value"
+
+      done < <(jq -r '.dependencies | to_entries | .[] | .key + "=" + .value ' $pkgjsonfile);
+   fi
+
+
 
    # reporting
    if [ $hasdeps -lt 1 ]; then 
       white "$(indent $align) no deps."
    fi
 
-   ((align-=4))
+   ((align-=4));
 
    # return to starting point
    popd &> ${cwdoutput}
 
    # reset to original npmobjpath
-   npmobjpath=$npmobjpath_history
-   blue -n "npmobjpath => " #&> ${output};
-   green "$npmobjpath" #&> ${output}
+   npmobjpath=${npmobjpath_history}
+   grey -n "npmobjpath => " &> ${output};
+   green "$npmobjpath" &> ${output};
 }
 
 
@@ -567,7 +625,7 @@ function install_package() {
    grey "install_package :: $PWD" &> ${output}
 
    # generate a map of all the installed dependencies
-   npm ls -l --global > "map.json"
+   npm ls -l --json --global > "map.json"
 
 
    # get a recursive list of all dependencies for this package
@@ -820,6 +878,7 @@ config_npmrc 'open' # Caution : npm set to access the internet registry
 
 # update the root package dir
 rootdir="${quarantine}/lib/node_modules/$NPMPACKAGE"
+mapfile="${rootdir}/map.json"
 
 #
 #  Assumptions:
