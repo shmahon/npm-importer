@@ -155,7 +155,6 @@ function parse_args() {
       red $(indent $align)"no npm package specified for import!"
       usage
    else
-      echo "first parameter :: $1"
       #NPMPACKAGE=$(echo $1 | sed -rn 's/(.*)@[\^>~]?([0-9]\.?){1,3}/\1/p') # ${1%%@[\^>~]*[0-9]*}
       #NPMPACKAGE=$(echo $1 | sed -rn 's/(.*)@[\^>~]?[0-9]+.*$/\1/p') # ${1%%@[\^>~]*[0-9]*}
       NPMPACKAGE=$(echo $1 | sed -rn 's/(^\@?[^\@]*).*$/\1/p') # ${1%%@[\^>~]*[0-9]*}
@@ -356,14 +355,17 @@ function read_dependencies() {
    local modpath=NotFound
    local npmobjpath_history=$npmobjpath
 
+
+   ((align+=3))
+   green "\"$package\""
+
    # initialize 'map' path
    npmobjpath="${npmobjpath}.dependencies.\"$package\""
    grey -n "$(indent $align)npmobjpath => " &> ${output}
    green "$npmobjpath" &> ${output} 
 
    # debug
-   ((align+=3))
-   grey "changing from $PWD -> $pkgpath." &> ${cwdoutput}
+   grey "$(indent $align)changing from $PWD -> $pkgpath." &> ${cwdoutput}
 
    # enter this packages directory
    pushd $PWD &> ${cwdoutput}
@@ -394,6 +396,7 @@ function read_dependencies() {
    # determination above.
 
    # simple loop
+   ((align+=2))
    for dep in $deps; do
 
       # bail on empty list
@@ -408,34 +411,31 @@ function read_dependencies() {
       # build this dependencies object path
       depobjpath="$npmobjpath.dependencies.$dep"
 
-      # debug
-      blue -n "$(indent $align)+ adding "; white -n "${dep//\"/}"
-
       # make sure its an actual dependency
       valid=$(cat $mapfile | jq -r "$depobjpath._args[0][0] | length")
       if [ -z $valid ] || [ $valid -eq 0 ]; then
-         red " x"
+         yellow "$(indent $align)$package has empty reference to $dep"
          continue
       fi
 
       # get requested version
       map_version_req=$(cat $mapfile | jq -r "$depobjpath._args[0][0].rawSpec")
-
-      # debug
-      white -n "@"; yellow -n "$map_version_req";
+      #grey "$(indent $align)map_version_req : $map_version_req" &> ${output}
 
       # get actual version
       map_version_actual=$(cat $mapfile | jq -r "$depobjpath.version")
+      #grey "$(indent $align)map_version_actual : $map_version_actual" &> ${output}
+
+      # debug
+      grey -n "$(indent $align)requested: "
+      yellow -n "$map_version_req"
 
       # just report on what version was actually installed 
       if [[ ${map_version_req//[\^\~\ \*]/} == $map_version_actual ]]; then
-         grey -n " ["; green -n "$map_version_actual"; grey -n "]"
+         grey -n ", got: "; green "$map_version_actual"
       else
-         grey -n " ["; red -n "$map_version_actual"; grey -n "]"
+         grey -n ", got: "; red "$map_version_actual"
       fi
-
-      # general indication that this dependency was added.
-      green " *"
 
       # get path
       map_path=$(cat $mapfile | jq -r "$depobjpath.path")
@@ -448,7 +448,7 @@ function read_dependencies() {
 
       read_dependencies ${dep//\"/} ${map_version_actual}
    done
-
+   ((align-=3))
 
 
    if ((0)); then
@@ -571,15 +571,15 @@ function read_dependencies() {
       white "$(indent $align) no deps."
    fi
 
-   ((align-=4));
+   ((align-=4))
 
    # return to starting point
    popd &> ${cwdoutput}
 
    # reset to original npmobjpath
    npmobjpath=${npmobjpath_history}
-   grey -n "npmobjpath => " &> ${output};
-   green "$npmobjpath" &> ${output};
+   grey -n "npmobjpath => " &> ${output}
+   green "$npmobjpath" &> ${output}
 }
 
 
@@ -865,6 +865,10 @@ fi
 # ensure proper NPM configuration
 #--------------------------------------
 mkdir -p $quarantine                # setup sandbox to work in
+if [ $? -ne 0 ] || [ ! -d $quarantine ]; then
+   failure "Unable to create quarantine directory ($quarantine).  Aborting ..."
+   exit 1
+fi
 npm config set prefix $quarantine
 npm config set cache  $quarantine/.npm
 export PATH=$quarantine/bin:$PATH
