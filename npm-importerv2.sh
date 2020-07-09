@@ -356,13 +356,12 @@ function read_dependencies() {
    local npmobjpath_history=$npmobjpath
 
 
-   ((align+=3))
-   green "\"$package\""
+   ((align+=2))
 
    # initialize 'map' path
    npmobjpath="${npmobjpath}.dependencies.\"$package\""
-   grey -n "$(indent $align)npmobjpath => " &> ${output}
-   green "$npmobjpath" &> ${output} 
+   #grey -n "$(indent $align)npmobjpath => " &> ${output}
+   #green "$npmobjpath" &> ${output} 
 
    # debug
    grey "$(indent $align)changing from $PWD -> $pkgpath." &> ${cwdoutput}
@@ -376,7 +375,6 @@ function read_dependencies() {
 
    # debug information
    grey "$(indent $align)path => $PWD" &> ${output}
-   ((align+=1))
 
 
    #-------------------------------------
@@ -385,7 +383,13 @@ function read_dependencies() {
 
    # use $rootdir/map.json to find dependency information
    hasdeps=$(cat $mapfile | jq "$npmobjpath.dependencies | length")
-   grey "$(indent $align)hasdeps => $hasdeps" &> ${output}
+
+   # reporting
+   if [ $hasdeps -lt 1 ]; then 
+      white "$(indent $align)no deps." &> ${output}
+   else
+      white "$(indent $align)$hasdeps deps." &> ${output}
+   fi
 
    # get a list of dependencies
    local deps=$( cat $mapfile | jq "$npmobjpath.dependencies | keys | .[]")
@@ -396,7 +400,7 @@ function read_dependencies() {
    # determination above.
 
    # simple loop
-   ((align+=2))
+   ((align+=3))
    for dep in $deps; do
 
       # bail on empty list
@@ -408,13 +412,16 @@ function read_dependencies() {
       #    - get path
       #    - iterate over dependencies
 
+      blue -n "$(indent $align)"${dep//\"/}
+
       # build this dependencies object path
       depobjpath="$npmobjpath.dependencies.$dep"
 
       # make sure its an actual dependency
       valid=$(cat $mapfile | jq -r "$depobjpath._args[0][0] | length")
       if [ -z $valid ] || [ $valid -eq 0 ]; then
-         yellow "$(indent $align)$package has empty reference to $dep"
+         grey -n " -"; echo -e $fg_yellow" skip"$reset
+         #echo -e $fg_yellow"$package has empty reference to $dep"$reset
          continue
       fi
 
@@ -427,19 +434,19 @@ function read_dependencies() {
       #grey "$(indent $align)map_version_actual : $map_version_actual" &> ${output}
 
       # debug
-      grey -n "$(indent $align)requested: "
-      yellow -n "$map_version_req"
+      grey -n " ["; yellow -n " $map_version_req"; grey -n " / ";
 
       # just report on what version was actually installed 
       if [[ ${map_version_req//[\^\~\ \*]/} == $map_version_actual ]]; then
-         grey -n ", got: "; green "$map_version_actual"
+         green -n "$map_version_actual"
       else
-         grey -n ", got: "; red "$map_version_actual"
+         red -n "$map_version_actual"
       fi
+      grey " ]"
 
       # get path
       map_path=$(cat $mapfile | jq -r "$depobjpath.path")
-      grey "$(indent $align)map_path : $map_path" &> ${output}
+      grey "$(indent $align) map_path : $map_path" &> ${output}
 
       # create record
                #modules[${key}${value:+,$value}]="NotInstalled;Optional"
@@ -451,135 +458,14 @@ function read_dependencies() {
    ((align-=3))
 
 
-   if ((0)); then
-      # add dependencies to our installation list ("report")
-      local key=""
-      local value=""
-      while IFS== read -r key value;
-      do
-         # check for empty deps
-         if [ -z $key ]; then
-            echo "key => x${key}x"
-            break
-         fi
-
-         # reporting flag
-         hasdeps=1
-
-         # strip all spaces from version
-         value=${value//\ /}
-
-         # always check to see what version we actually got
-         local prever=$value
-         grey "using prever => $prever" &> ${output}
-         if [ -z $prever ]; then 
-            prever='none'; 
-            value=$(check_version "$key" 'global')
-         else
-            value=$(check_version "$key@$value" 'global')
-         fi;
-         grey "check_version :: returned value => $value" &> ${output}
-
-
-         if [[ $value != "NotFound" ]]; then
-
-            # debug
-            grey -n "$(indent $align)requested: "
-            yellow -n "$prever"
-
-            # just report on what version was actually installed 
-            if [[ ${prever//[\^\~\ \*]/} == $value ]]; then
-               grey -n ", got: "; green "$value"
-            else
-               grey -n ", got: "; red "$value"
-            fi
-
-            echo "";
-         else
-            # mark as unsatisfed
-            modules[${key},$prever]="NotFound"
-            modpaths[${key},$prever]="NotFound"
-            value=$(jq -r ".optionalDependencies.\"$key\"" $pkgjsonfile) 2> ${output};
-            if [ ! -z $value ] && [[ $value != "null" ]]; then
-               yellow "$(indent $((align+2)))$key was not installed (optional dependency)."
-               modules[${key}${value:+,$value}]="NotInstalled;Optional"
-            else
-               yellow -n "$(indent $align)$key@$prever :: "; red "NotFound"
-            fi
-
-            # skip this one
-            continue
-         fi
-
-         # debug
-         blue -n "$(indent $align)$package${version:+@$version} "
-         grey -n "dep: "
-         green -n "$key"; grey -n "@"; yellow -n "$value"
-
-         # only add this dependency if not already in our list
-         if [[ ! -z "${modules[${key}${value:+,$value}]:-}" ]]; then
-            red " x"
-
-            # no need to check for child dependencies
-            continue
-         else
-            green " *"
-
-            # now mark it as installed
-            modules[${key}${value:+,$value}]="installed"
-         fi
-
-         # find where this module was installed
-         modpath=$(check_path $key $value)
-
-         # record the path for this dependency
-         modpaths[${key}${value:+,$value}]=$modpath
-
-         # distinguish 'optional' dependencies from errors
-         if [[ $modpath == "NotFound" ]]; then
-            value=$(jq -r ".optionalDependencies.\"$key\"" $pkgjsonfile) 2> ${output};
-            if [ ! -z $value ] && [[ $value != "null" ]]; then
-               yellow "$(indent $((align+2)))$key was not installed (optional dependency)."
-               modules[${key}${value:+,$value}]="NotInstalled;Optional"
-            # error : just didn't install a dependency for some reason
-            else
-               red "$(indent $((align+2)))$key was not installed"
-               modules[${key}${value:+,$value}]="NotFound"
-            fi
-            # just move on to the next dependency
-            continue
-         fi
-         
-         # debug reporting
-         grey -n "$(indent $((align+2)))" &> ${output}
-         grey -n "added modpaths[${key}${value:+,$value}] :: " &> ${output}
-         grey "${modpaths[${key}${value:+,$value}]}" &> ${output}
-
-         cyan -n "$(indent $((align+2)))" &> ${output}
-         cyan "checking $key@$value for deps..." &> ${output}
-
-         # recursively add this dependencies, dependencies
-         read_dependencies $key "$value"
-
-      done < <(jq -r '.dependencies | to_entries | .[] | .key + "=" + .value ' $pkgjsonfile);
-   fi
-
-
-
-   # reporting
-   if [ $hasdeps -lt 1 ]; then 
-      white "$(indent $align) no deps."
-   fi
-
-   ((align-=4))
-
-   # return to starting point
-   popd &> ${cwdoutput}
-
    # reset to original npmobjpath
    npmobjpath=${npmobjpath_history}
    grey -n "npmobjpath => " &> ${output}
    green "$npmobjpath" &> ${output}
+   ((align-=2))
+
+   # return to starting point
+   popd &> ${cwdoutput}
 }
 
 
@@ -598,7 +484,7 @@ function install_package() {
    local ret=0
 
    # install the module without caching it in npm-proxy
-   grey "$(indent $align)Installing package locally :: $package${version:+@$version}" &> ${output}
+   grey "Installing package locally :: $package${version:+@$version}" &> ${output}
    npm install -g ${ONLYOPTS} "$package${version:+@$version}" &> ${output}
    if [ $? -ne 0 ]; then
       red "Failed to install $package${version:+@$version}. Aborting"
@@ -628,11 +514,14 @@ function install_package() {
    npm ls -l --json --global > "map.json"
 
 
+   # debug
+   green "$package"
+
    # get a recursive list of all dependencies for this package
    read_dependencies $package $version
 
    # install all of the devDependencies at the 'global' scope
-   if [[ $devFlag == "true" ]]; then
+   if [[ $devFlag == "false" ]]; then
 
       # requires that we already be in $quarantine/lib/node_modules/$package
       grey "install_package :: installing $package development dependencies."
