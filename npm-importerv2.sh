@@ -342,6 +342,161 @@ function read_dev_dependencies() {
 }
 
 
+
+#---------------------------------
+#
+#
+#---------------------------------
+function read_recursive_dependencies() {
+
+   local package=$1
+   local version=$2
+   local pkgpath=${modpaths[${package}${version:+,$version}]}
+   local hasdeps=0
+   local modpath=NotFound
+   local npmobjpath_history=$npmobjpath
+
+   npmobjpath="${npmobjpath}.dependencies"
+
+   echo "npmobjpath -> $npmobjpath"
+
+   ((align+=2))
+   local dep=""
+   local ver=""
+   local hasdeps=""
+   local counter=1
+   while read -r dep ver hasdeps; do
+      echo "dep :: $dep"
+      echo "ver :: $ver"
+      echo "has :: $hasdeps"
+      blue -n "$(indent $align) dependency[$counter] : "
+      white "$dep"
+      ((counter+=1))
+
+      # conver to int
+      #hasdeps=$(($hasdeps))
+      # reporting
+      if [ $((hasdeps)) -gt 0 ]; then 
+         # yes!
+         npmobjpath="${npmobjpath}.$dep"
+         read_recursive_dependencies ${dep} ${ver} 
+      fi
+   done< <( cat $mapfile | jq --arg objpath ${npmobjpath##.} -r '.[$objpath] | to_entries[] | { package: .key, version: .value.version, hasdeps: .value.dependencies | length } | "\(.package) \(.version) \(.hasdeps)"')
+
+   yellow "early abort for testing...."; exit 0
+
+   ((align+=2))
+
+   # initialize 'map' path
+   npmobjpath="${npmobjpath}.dependencies.\"$package\""
+   #grey -n "$(indent $align)npmobjpath => " &> ${output}
+   #green "$npmobjpath" &> ${output} 
+
+   # debug
+   grey "$(indent $align)changing from $PWD -> $pkgpath." &> ${cwdoutput}
+
+   # enter this packages directory
+   pushd $PWD &> ${cwdoutput}
+   cd $pkgpath
+
+   # set location for dependency file
+   local pkgjsonfile=$PWD/package.json
+
+   # debug information
+   grey "$(indent $align)path => $PWD" &> ${output}
+
+
+   #-------------------------------------
+   #  map.json method for this routine
+   #-------------------------------------
+
+   # use $rootdir/map.json to find dependency information
+   hasdeps=$(cat $mapfile | jq "$npmobjpath.dependencies | length")
+
+   # reporting
+   if [ $hasdeps -lt 1 ]; then 
+      white "$(indent $align)no deps." &> ${output}
+   else
+      white "$(indent $align)$hasdeps deps." &> ${output}
+   fi
+
+   # get a list of dependencies
+   local deps=$( cat $mapfile | jq "$npmobjpath.dependencies | keys | .[]")
+
+   # because we are completely tracking scope, we don't *need* to get
+   # the version anymore, but we also *aren't* getting the version with
+   # this method.  Some more exotic method would be needed in the 'deps'
+   # determination above.
+
+   # simple loop
+   ((align+=3))
+   for dep in $deps; do
+
+      # bail on empty list
+      if [ -z $dep ]; then continue; fi;
+
+      # for each dependenc:
+      #    - verify that its installed
+      #    - get version
+      #    - get path
+      #    - iterate over dependencies
+
+      blue -n "$(indent $align)"${dep//\"/}
+
+      # build this dependencies object path
+      depobjpath="$npmobjpath.dependencies.$dep"
+
+      # make sure its an actual dependency
+      valid=$(cat $mapfile | jq -r "$depobjpath._args[0][0] | length")
+      if [ -z $valid ] || [ $valid -eq 0 ]; then
+         grey -n " -"; echo -e $fg_yellow" skip"$reset
+         #echo -e $fg_yellow"$package has empty reference to $dep"$reset
+         continue
+      fi
+
+      # get requested version
+      map_version_req=$(cat $mapfile | jq -r "$depobjpath._args[0][0].rawSpec")
+      #grey "$(indent $align)map_version_req : $map_version_req" &> ${output}
+
+      # get actual version
+      map_version_actual=$(cat $mapfile | jq -r "$depobjpath.version")
+      #grey "$(indent $align)map_version_actual : $map_version_actual" &> ${output}
+
+      # debug
+      grey -n " ["; yellow -n " $map_version_req"; grey -n " / ";
+
+      # just report on what version was actually installed 
+      if [[ ${map_version_req//[\^\~\ \*]/} == $map_version_actual ]]; then
+         green -n "$map_version_actual"
+      else
+         red -n "$map_version_actual"
+      fi
+      grey " ]"
+
+      # get path
+      map_path=$(cat $mapfile | jq -r "$depobjpath.path")
+      grey "$(indent $align) map_path : $map_path" &> ${output}
+
+      # create record
+               #modules[${key}${value:+,$value}]="NotInstalled;Optional"
+      modules[${dep//\"/}${map_version_actual:+,$map_version_actual}]="installed"
+      modpaths[${dep//\"/}${map_version_actual:+,$map_version_actual}]=${map_path}
+
+      read_dependencies ${dep//\"/} ${map_version_actual}
+   done
+   ((align-=3))
+
+
+   # reset to original npmobjpath
+   npmobjpath=${npmobjpath_history}
+   grey -n "npmobjpath => " &> ${output}
+   green "$npmobjpath" &> ${output}
+   ((align-=2))
+
+   # return to starting point
+   popd &> ${cwdoutput}
+}
+
 #---------------------------------
 #
 #
@@ -498,7 +653,8 @@ function install_package() {
    # record where we started
    pushd $PWD &> ${cwdoutput}
 
-   # move to the top-level package directory
+   # move to the top-level package directory; this is very important if
+   # installing 'devDependencies'
    cd $rootdir
 
    #--------------------------------
@@ -510,30 +666,31 @@ function install_package() {
    # debug announcement
    grey "install_package :: $PWD" &> ${output}
 
-   # generate a map of all the installed dependencies
-   npm ls -l --json --global > "map.json"
 
+   # install all of the devDependencies at the 'global' scope
+   if [[ $devFlag == "true" ]]; then
+
+      # requires that we already be in $quarantine/lib/node_modules/$package
+      grey "install_package :: installing $package development dependencies."
+      npm install &> ${output}
+      if [ $? -ne 0 ]; then
+         red "install_package :: devDependencies installation failed for $package"
+         exit 1
+      fi
+
+      # original: read_dev_dependencies $nodedir $package $version
+      #read_dev_dependencies $package $version
+   fi
+
+   # generate a map of all the installed dependencies
+   npm ls -l --json > "map.json"
 
    # debug
    green "$package"
 
    # get a recursive list of all dependencies for this package
-   read_dependencies $package $version
-
-   # install all of the devDependencies at the 'global' scope
-   if [[ $devFlag == "false" ]]; then
-
-      # requires that we already be in $quarantine/lib/node_modules/$package
-      grey "install_package :: installing $package development dependencies."
-      npm install --development &> ${output}
-
-      # original: read_dev_dependencies $nodedir $package $version
-      read_dev_dependencies $package $version
-      if [ $? -ne 0 ]; then
-         red "install_package :: read_dev_dependencies :: failed for $package"
-         exit 1
-      fi
-   fi
+   #read_dependencies $package $version
+   read_recursive_dependencies $package $version
 
    # return to original location
    popd &> ${cwdoutput}
